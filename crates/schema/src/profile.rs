@@ -1351,6 +1351,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_identity_delta_beside_a_format_tree_delta_is_still_only_the_format_tree() {
+        // The clause neither arm above can reach on its own: one of them moves identity with
+        // an empty device half, the other moves the format tree with an empty identity half,
+        // and "an identity delta never makes the format-tree permission go away" is a claim
+        // about the pair. It is also the pair the ruling is *for* — a replug is where a bus
+        // path moves, so a `compare` that let the identity half into `verdict()` would answer
+        // `Differs` about exactly the two captures the owner's 2026-08-13 ruling licenses, and
+        // it would do it on the everyday shape rather than on a contrived one.
+        let mine = profile(vec![control("brightness", 0, 50)]);
+        let mut theirs = mine.clone();
+        theirs.invariant.info.fingerprint.bus_path = "9-9:1.0".to_owned();
+        theirs.invariant.formats.push(crate::camera::FormatInfo {
+            pixel_format: crate::camera::PixelFormat(*b"MJPG"),
+            description: "Motion-JPEG".to_owned(),
+            flags: 0,
+            sizes: Vec::new(),
+        });
+
+        let comparison = mine.compare(&theirs);
+        assert!(
+            comparison.device_differs_only_in_the_format_tree(),
+            "a camera whose bus path moved lost the owner's format-tree ruling: {comparison}"
+        );
+        assert_eq!(comparison.verdict(), DeviceVerdict::OnlyTheFormatTree);
+        assert_eq!(comparison.device.sections(), vec!["formats"]);
+        // The identity half beside it, because an arm whose identity delta went missing would
+        // be the formats-only arm above wearing another name and would hold nothing.
+        assert_eq!(
+            comparison.identity,
+            vec!["fingerprint.bus_path".to_owned()],
+            "the identity half stopped naming the field that moved: {comparison}"
+        );
+    }
+
     /// A profile whose invariant carries one measured automation pair.
     ///
     /// The shape D3's probe produces on the seed hardware — a manual control, the automation

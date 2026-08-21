@@ -112,6 +112,231 @@ fail_case_an_alternation_with_unbalanced_parentheses() {
         env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
 }
 
+# ---------------------------------- the same rule, for a clause that carries no alternation
+#
+# **The review of the batch above, one nesting level in.** The branch loop was entered only for a
+# regex containing a `|`, so a row that reached a claim through a **lone** `test()` clause held
+# that claim by nothing: the row stayed above the zero-selection check on the strength of its
+# other disjuncts, and the day the lone clause's test was renamed the criterion went on naming a
+# test the listing no longer holds, with this gate green. An alternation is one spelling of that
+# defect and not the class of it (note **N249**, rubric A17), so the population is every
+# `test(/…/)` clause in a selection and a clause with no `|` is a branch of one. Rows of this
+# table reach a claim through such a clause today, in unions spelled with `or` and with nextest's
+# `+`, so the shape is the table's own rather than a hypothetical one. These four arms are the
+# widening's two directions and the two refusals it inherits.
+
+# **The hole itself**, in the shape those rows are written in: a union whose other disjunct still
+# selects, so the zero-selection check above is green and always would have been, beside a lone
+# clause naming something the listing does not hold.
+fail_case_a_lone_test_clause_names_a_test_the_row_no_longer_selects() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" \
+        'package(webcam-handler-schema) + (package(webcam-handler-daemon) and test(/zzz_a_lone_clause_nothing_selects/))' \
+        'a union whose other disjunct still selects, beside a clause that carries no alternation'
+    gate_red_because "none of them is one its branch 'test(/zzz_a_lone_clause_nothing_selects/)' names" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The green direction, and the reason it is its own arm rather than left to `pass_case`: a
+# widening that refused every clause it could not find a `|` in would satisfy the arm above while
+# turning the honest majority of this table red, and `pass_case` would say so without saying
+# which shape did it. Both clauses here carry no alternation and both name something the lister
+# answers for, and they are joined by the union operator the affected rows use.
+pass_case_a_lone_test_clause_that_still_names_something_stays_green() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" \
+        'package(webcam-handler-schema) and (test(/^slug::/) + test(/round_trips$/))' \
+        'two clauses, neither of them a union, and the lister answers for what each one names'
+    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+}
+
+# The alphabet refusal, over the widened population. A clause this gate cannot split is a
+# **failure and not a pass** whether or not it is a union, because green would mean "a claim in
+# this row went unchecked and nothing says which one". The arm names the clause as well as the
+# alphabet, so a reader can tell it from the alternation arm above by the sentence alone.
+fail_case_a_lone_test_clause_outside_the_alphabet_is_a_refusal() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema) and test(/^slug[0-9]::/)' \
+        'a clause with no alternation, spelled outside the alphabet the two engines agree on'
+    gate_red_because "'test(/^slug[0-9]::/)' uses '[-]'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The other way the splitter can be handed a clause it cannot answer about, over the widened
+# population. Inside the alphabet, so the arm above does not fire; and unbalanced without a `|`
+# anywhere, which is the shape that reached the splitter for the first time with this widening —
+# before it, a regex like this was skipped and its claim was held by nothing at all.
+fail_case_a_lone_test_clause_with_unbalanced_parentheses_is_a_refusal() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema) and test(/^(slug::/)' \
+        'a clause with no alternation and a parenthesis nobody closed'
+    gate_red_because "unbalanced parentheses — 'test(/^(slug::/)'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# ------------------------------------- a count of tests in the prose, against the selection
+#
+# The G7–G9 review's finding #21. A `what` column said "The row above selects nine tests" about a
+# selection the tool lists ten names for; the phrase was deleted (note **N318**) and the class was
+# left with nothing that could go red on the next one. These arms are that class, and they are
+# three rather than one because the rule is about **a cardinal qualifying the noun** and not about
+# any one way of writing it — a ban that names one spelling is a ban on one spelling (note
+# **N249**, rubric A17). The stub lister answers for exactly one test, so each seeded number is a
+# claim the row demonstrably does not hold.
+
+fail_case_a_row_counts_more_tests_than_its_selection_holds() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'the 3 tests this row selects, which is one test and has been for a while'
+    gate_red_because "its criterion says '3 tests'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The same claim spelled in words, which is how this table's smaller numbers are written: a rule
+# that read `23` and not `seven` would have been green on most of the rows it exists for.
+fail_case_a_count_written_in_words_is_the_same_claim_as_one_written_in_digits() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'the seven tests this row selects, one per member of the vocabulary'
+    gate_red_because "its criterion says 'seven tests'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The tens, spelled bare, which the word reader knew only as the left half of a compound: `ten`
+# was consulted for `thirty-one` and never for `thirty`, so `thirty tests` through `ninety tests`
+# named a number nothing read and the summary went on saying `checked 0 count(s)` about them.
+# One spelling of the ban standing in for the class of it (note **N249**, rubric A17) — and in
+# the direction that costs a silent miss rather than a loud refusal, which is the direction this
+# rule exists for. The arm is red on `forty tests` against a row the lister answers one test for.
+fail_case_a_count_written_as_a_bare_multiple_of_ten_is_still_a_count() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'the forty tests this row selects, one for every control the walk reaches'
+    gate_red_because "its criterion says 'forty tests'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# And the same claim under this table's own house emphasis — the phrase that started all of this
+# was written as `**1381 of 1381 tests**`, so a reader that stopped at the asterisk would have
+# missed the instance it was written for.
+fail_case_a_count_wrapped_in_emphasis_is_still_a_count() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'each edit passed the **eleven** tests this row selects and turns none of them red'
+    gate_red_because "its criterion says 'eleven tests'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# **The exemption, driven.** A rate says how the row's tests are spread over some other
+# population and nothing about how many of them there are, so `three tests per matrix cell` and
+# `four tests apiece` are not counts of this row — and both numbers here are wrong *as* counts,
+# which is what makes the green meaningful. `g4`'s signal-parity row and `g5`'s two matrix rows
+# are worded this way, so an exemption that had quietly stopped applying would be a refusal those
+# rows have no honest answer to; and an exemption no arm exercises is an exemption nobody checked.
+pass_case_a_rate_over_another_population_is_not_a_count_of_this_row() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'the bind by token matrix, three tests per matrix cell and four tests apiece over the two transports'
+    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+}
+
+# **The remedy the refusal names, driven.** The failure above tells the author to say which
+# population the number counts so that it stops qualifying the bare noun, and a refusal whose
+# advice nobody has run is advice. This is `g6`'s repaired sentence in miniature: 1381 is a count
+# of the workspace suite standing in a row that selects one test, and naming the population is
+# what makes it true prose rather than a claim about this row.
+pass_case_a_number_that_names_the_population_it_counts_is_not_a_claim_about_this_row() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'each of the three one-identifier edits passed **1381 of 1381 workspace tests** and each turns this row red'
+    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+}
+
+# ---------------- the same rule, through the punctuation this table's sentences actually carry
+#
+# **The review of the commit above.** The rule was landed with the word reader keeping a comma at
+# both ends of every word, so that `1,381` would survive it — and the price was that `tests,` was
+# not the noun `tests`, which is to say that finding #21's own sentence escaped the ban the moment
+# a clause ran on after it. `the row above selects nine tests, one per hole` passed a table whose
+# row holds one test, and the summary said `checked 0 count(s)`: a ban on one spelling of the
+# spelling it was already a ban on (note **N249**, rubric A17). These three arms are the two
+# directions that hole had and the property the comma was being kept for.
+
+# The hole itself, in the shape the phrase it exists for is written in. The trailing `one per
+# hole` is a rate over another population and is read as nothing, so this arm is red about the
+# nine and about nothing else.
+fail_case_a_count_a_clause_runs_on_after_is_still_a_count() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'the row above selects nine tests, one per hole'
+    gate_red_because "its criterion says 'nine tests'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The other direction of the same repair, and the reason it is a separate arm: the comma has to
+# come off the word **after** the noun as well, or the fix above converts `g4`'s signal-parity
+# sentence — written with the comma, as `one test, per signal` — from a rate this rule ignores
+# into a count this rule refuses. A repair that reads the noun through punctuation and the rate
+# through none would be red on honest prose and would have looked green in every arm above.
+pass_case_a_rate_stays_a_rate_through_the_comma_the_sentence_sets_it_off_with() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'one test, per signal, delivered for real to a daemon that is mid-sweep'
+    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+}
+
+# And the property the comma was kept for in the first place, held by an arm rather than by the
+# rule that cost the hole: a thousands separator stands **inside** a word and a strip of its two
+# ends leaves it there. The arm is red on the phrase as written, `1,381 tests`, so a reader that
+# went back to deleting every comma would go green here on `1381 tests` and be told it named the
+# wrong sentence — which is the only way this claim can be checked from outside.
+fail_case_a_thousands_separator_is_part_of_the_number_and_not_punctuation_round_it() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'the 1,381 tests this row selects'
+    gate_red_because "its criterion says '1,381 tests'" \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
 fail_case_selection_matches_no_tests() {
     local tree lister
     tree="$(gate_scratch_tree)"

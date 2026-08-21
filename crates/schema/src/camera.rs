@@ -341,8 +341,8 @@ impl CameraFingerprint {
     /// sentence has nothing to say about — the recipe that measures D19's last clause did
     /// exactly that until 2026-08-20 (note **N301**).
     ///
-    /// Written as "every field that disagrees is the address" rather than as a conjunction of
-    /// the other four, for the reason
+    /// Written as "every field that disagrees is the address" rather than as a conjunction over
+    /// the fields that remain, for the reason
     /// [`crate::profile::ProfileComparison::device_differs_only_in_the_format_tree`] gives
     /// about its own: a conjunction fails *open* the day the fingerprint grows a field, and a
     /// claim that two devices are the same should fail closed.
@@ -926,11 +926,13 @@ closed_vocabulary! {
 impl Lossiness {
     /// Classify a FourCC.
     ///
-    /// The five arms are the five formats [`PixelFormat`] names, which are also exactly
-    /// the five `imaging::decode::SourceFormat` can turn into pixels (design D6 closes that
-    /// set). That coincidence is load-bearing rather than lucky — the ranking below sorts
-    /// what it cannot classify to the back precisely because it cannot decode it either —
-    /// so `imaging` asserts it from its own side rather than leaving it to be noticed.
+    /// Every format [`PixelFormat`] names is classified here, and those are exactly the
+    /// formats `imaging::decode::SourceFormat` can turn into pixels (design D6 closes that
+    /// set) — which is not one arm per format: `MJPG` and `JPEG` share an arm below, and
+    /// the last arm is rule 6's fallback rather than a format at all. That coincidence is
+    /// load-bearing rather than lucky — the ranking below sorts what it cannot classify to
+    /// the back precisely because it cannot decode it either — so `imaging` asserts it from
+    /// its own side rather than leaving it to be noticed.
     #[must_use]
     pub fn of(format: PixelFormat) -> Self {
         match format {

@@ -29992,3 +29992,1701 @@ unchanged by this.
 
 **Retires when:** something reconciles the two documents' figures against the table, which is the
 open question and not this batch.
+
+## N335 — The criteria table's other column, which nothing had ever read
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/phase-criteria.tsv` — the g7, g8 and g9 rows,
+and g6's line 191. **Class:** a criterion's `what` column is prose about the tree that nothing
+reconciles against the tree (**N153**, **N158**; rubric A15).
+
+The three gate closes were preceded by a row-truth audit: six readers over all fifty-nine `g7`,
+`g8` and `g9` rows as they stood at `f9abe48` — twenty-five, twenty-two and twelve — each finding
+then put to an independent skeptic whose default was that the row was fine. Forty-three rows
+survived. Sixteen did not: eleven whose prose states something false about the tree, and five
+whose sentence claims more than the row's own selection can see.
+
+**The shapes it took**, because the class is easier to recognise as a list of them than as a
+definition:
+
+- *A count of one where the tree had three.* Line 228 called `wire-surface-sync.sh` "the one
+  predicate that reads a design document by literal path"; `dependency-registry-sync.sh` and
+  `facade-stability-table-sync.sh` both do. `796babb` is the one commit that ever wrote the
+  clause, and it is the commit that added `dependency-registry-sync.sh`, so the sentence was
+  already false about the tree it was committed to; `962dff6` made it three two days later.
+- *A count of code nothing reconciles.* Line 273's "Nineteen camera-taking verbs flatten
+  `cli_core::CameraArg`" over a tree with sixteen, a figure no reading of either root or of the
+  history yields; line 275's "the other thirty-nine", which reached its remainder by subtracting
+  a *rung* from a population of gate predicates that rung is not in; and g6's line 191, where
+  "each passed **1381 of 1381 tests**" is a count of the workspace suite standing in the place a
+  reader reads as a count of this row's own five-test selection.
+- *A uniqueness the cited note had already retracted.* Line 251 cited **N291** for
+  "`RecordReport::stats` carried an argumentless `#[serde(default)]` — the only one in this
+  schema on an *answer* rather than a request field"; that sentence is the one N291's own
+  correction calls false, nine of the nineteen sitting on answers.
+- *A pin resting on a corpus property the corpus does not have.* Line 233 pinned D14's "selection
+  never filters enumeration" over the corpus "because two committed profiles share a card name".
+  The six committed profiles carry six distinct card names, so `assign_ids` hands out six natural
+  slugs and no collision ordinal at all, and the counterfactual the clause exists to support is
+  an effect this population cannot produce.
+- *An attribution to the neighbouring entry.* Line 248 filed the R3 doctored-plumbing transcripts
+  under **E21**, which is the healthy-camera stats entry and contains none of them; they are
+  **N290**'s, as N298 already said in as many words. Line 280 filed `bcd2826`'s interlock under
+  P8b; docs/13 files that commit under P8a, and the schema it moved is P8a's.
+- *A claim about a surface that does not have it.* Line 281 gated "`photo diff` and its flags";
+  the verb declares two positionals and no long option, and the generated guide emits no Option
+  table for it, so the consequence the row names could not occur.
+- *A universal false in both directions.* Line 267 said the positive corpus arm rewrites "*every*
+  `info` field the comparison looks at", listing `id` — which the comparison deliberately
+  excludes — and omitting `card`, `driver` and the node set, which it compares and the arm never
+  moves.
+- *A plural over a substitution of one.* Line 283 said "P7b puts the selector spellings through
+  both" roots; `cli-parity.sh` substitutes exactly one spelling, `cam:<id>`, so four of D14's
+  five schemes could stop working on the client root with the row green.
+- *And five sentences the row's own selection cannot see*: a non-vacuity arm named in the prose
+  and left out of the alternation (270); an identity-delta-beside-a-format-tree consequence no
+  arm anywhere drove (269); a both-muxers delivery law held one crate outside the selection
+  (250); a listing's arity standing where the sentence claims an identity (247); and a facade
+  that "holds no camera between calls", which is true of the type and invisible to every arm the
+  row selects, because on the fake a retained handle is invisible to a second `open` (236).
+
+**What this says about the table.** Its `selection` column is machine-read at every `just ci`:
+`counted-selections.sh` counts what each row selects and, since the P5 review, every branch of
+every alternation, so a filter that quietly stopped matching is a red gate. Its `what` column —
+the half that says *what was proved*, and the half a phase review and an owner read — was read by
+nobody. So the two halves of a criterion could drift apart for as long as the machine-read half
+still matched something, and several of these sixteen were false on the commit that wrote them
+rather than stale: 228's "one" was two the moment it was written, because the commit that wrote
+it added the second path-reader, and 273's nineteen matched no reading of the tree at any point
+in its history. A criteria table is the one artifact in this
+repository whose whole job is to say what the tree proves; when its prose is unreconciled it is
+the review's own instrument reporting from memory.
+
+**What lands with it.** Eleven rows are reworded to what the tree does. Three keep their sentence
+and get the arm it needs written for them — 236 the facade's no-camera-between-calls witness, 247
+the daemon's listing identity, and 269 D15's format-tree permission beside an identity delta. Two
+keep their sentence and gain the selection that reaches an arm the tree already had — 250 the
+`imaging` both-muxers arm and 270 the `the_double_is_armed` non-vacuity arm — which is AGENTS
+rule 1's preference over rewording a criterion down to whatever the arms happened to assert. 269
+is in both lists, because the arm written for it is also the name its widened selection carries,
+so the three selection widenings are 250, 269 and 270. And the first reconciler over the `what`
+column lands beside them: `counted-selections.sh` now reads a cardinal that immediately qualifies
+`test`/`tests` in a `tests` row as a claim about that row's measured selection. That covers one of
+the shapes above and none of the other seven, which is the honest size of it — the audit that
+found the rest was six readers and a skeptic apiece over fifty-nine rows, and nothing in the tree
+would have found any of them.
+
+**Two of the three selection widenings are gate-visible and the third is not**, which is measured
+rather than assumed. `counted-selections.sh` itemises a branch only where the row's regex carries
+an alternation, so 269's and 270's new names are checked one by one: driven against a listing the
+tree no longer holds either name in, the predicate goes red on exactly that branch — "selects 3
+test(s), and none of them is one its branch
+`test(/profile::tests::an_identity_delta_beside_a_format_tree_delta_is_still_only_the_format_tree/)`
+names" — and quotes the criterion the branch belongs to. Line 250's clause is a single
+`test(/both_containers_report_every_cap_in_the_vocabulary/)`, and a one-alternative group does not
+become a branch (measured: wrapping it in parentheses leaves the branch count at 168), so the row
+*runs* the arm — four tests across two suites where it used to select three across one — while the
+red that catches the arm going missing lands on g6's line 192, which selects it alone. The row's
+sentence is true and `just gate-g8` now runs the code it is about; what no predicate holds is the
+row's continued naming of it.
+
+**Retires when:** something reads more of the `what` column than its counts do, or the table stops
+being where a phase's claims are written.
+
+## N336 — The widened row named the arm it had just bought, and the widening is the one thing the gate could not see
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/phase-criteria.tsv`, lines 250 and 233.
+**Class:** a repair that closes a claim by widening a selection, in a table whose branch check
+reads alternations and nothing else — plus a universal restated in a vocabulary this repository
+spells two ways. Found by the adversarial reading the repair-verification loop requires of every
+repair before it commits (rubric rule 8), on the commit that repairs sixteen rows for saying
+things the tree does not do.
+
+**Line 250, and why widening a selection is not the same as gating a sentence.** The row-truth
+audit found g8's `wall_clock_skew_us` row claiming that *both* muxers count a capped frame on the
+container's side while its selection reached only `engine::record`'s AVI arm — docs/11 H1's shape
+in a criteria row. The repair widened the selection with
+`or (package(webcam-handler-imaging) and test(/both_containers_report_every_cap_in_the_vocabulary/))`
+and wrote the arm's name into the prose, which is rule 1's preference over rewording the criterion
+down to what the arms happen to assert. The row now *runs* the claim, and `just gate-g8` goes red
+on a both-muxers regression.
+
+What nothing held is the row's naming of it. `counted-selections.sh` splits a `test()` regex into
+branches and counts each against the names the row selected, and it enters that loop only for a
+regex carrying a `|` — a lone `test()` clause is one selection's worth of prose with no branch to
+count. Driven rather than reasoned, on the shipped predicate over the real workspace listing with
+that one testcase removed from the tool's own answer through the documented
+`$WCH_GATE_NEXTEST_LIST` seam, over a copy of the table trimmed to this row and the two phases'
+suite-and-selftest pairs: **PASS**, `0 named skip(s)`, with the row's own note line reading
+`selects 3 test(s)`. The three engine arms keep it above zero, the zero-selection
+check stays green, and the sentence goes on naming a claim the selection no longer holds — which
+is the same defect the widening was landed to end, one nesting level in. Wrapping the clause as a
+one-alternative group buys nothing: rewriting the clause as
+`test(/(both_containers_report_every_cap_in_the_vocabulary)/)` leaves the branch count where it
+was, measured on the same rig.
+
+**The close is the cardinal, and it is a count something reconciles.** The batch that repairs
+these rows also lands the rule that a cardinal qualifying `test`/`tests` in a `tests` row is a
+claim about how many tests that row selects, compared against the number the same predicate
+measured three lines above. So the row says **four tests**, and the arm that was missing exists:
+with the imaging testcase gone from the listing the predicate is red on *"selects 3 test(s), and
+its criterion says 'four tests' … so this one claims 4 and the row holds 3"*, and green over the
+tree as it stands, `7 count(s)` compared where there were six. This is the general answer for a
+row that reaches a claim through a lone `test()` disjunct beside another, and the population is
+lines 162, 223, 246, 250, 256 and 272. Only 250 is taken here, because only 250 is
+in this batch; the class-wide alternative is to teach the branch check to itemise a single
+`test()` clause as a branch of one, which is a change to the predicate rather than to the table
+(**N249**, rubric A17 — the class, not one spelling of it).
+
+**Line 233, and a fingerprint tier that is two different populations.** The same repair replaced
+the row's false pin ("two committed profiles share a card name" — the six committed profiles carry
+six distinct card names) with a true one, and then generalised it as *"every fingerprint tier but
+the bus path collides on this host"*. Under this repository's selector vocabulary that sentence is
+exactly true: `SelectorScheme::stability` calls `BusPath`, `UsbId` and `Serial` — and only those
+three — `Stability::Fingerprint`, and
+`each_scheme_says_whether_it_is_an_address_or_an_identity` asserts it. Under the other reading the
+same three words carry, the fields of `CameraFingerprint`, it is false, and it is false at `card`:
+the field the sentence one clause earlier had just stopped claiming a collision for. A universal
+that is true of one population and false of another the same phrase names is the audit's own
+finding in a second costume, so the universal is gone and the three facts are stated instead — a
+`usb:` request and a `serial:` request can each name two cameras on this listing, so can a
+`/dev/videoN`, and every profile's bus path is its own. Each is driven by an arm in the same
+`binary(selectors)` the row selects from (`the_two_logical_cameras_behind_one_usb_id_answer_ambiguously_and_name_both`,
+`a_serial_two_devices_report_is_ambiguous_rather_than_first_wins`,
+`a_node_path_two_profiles_share_is_ambiguous_which_is_what_makes_it_an_address`,
+`every_camera_in_the_corpus_is_found_by_the_bus_path_it_was_captured_at`), and the sentence's
+former conclusion no longer has to be carried by a `/dev/videoN` clause, which is an address and
+was never a fingerprint tier at all.
+
+**Retires when:** nothing retires either. What generalises is the pair of questions to ask of a
+repair that widens a selection: which arm goes red if the thing just added stops existing, and is
+the vocabulary the new sentence generalises in the one the predicate reads or the one the reader
+reads.
+
+## N337 — Three criterion sentences that were true of the tree and red-able by nothing in it
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/phase-criteria.tsv`'s g7 facade row, its g7 D15
+identity row and its g8 device-loss row, and the three arms this note lands for them —
+`schema::profile::tests::an_identity_delta_beside_a_format_tree_delta_is_still_only_the_format_tree`,
+`engine::facade::tests::the_facade_holds_no_camera_between_calls`, and
+`crates/daemon/tests/subscriptions.rs`'s two listing helpers. **Class:** a criterion clause whose
+only witness is the type it describes — the shape rule 1 prefers to close with an arm rather than
+by rewording the sentence down to what the arms happen to assert.
+
+The close's row-truth audit found sixteen criterion rows that did not survive it, and three of them
+failed in the same way rather than by being false: the sentence was a true statement about the
+tree, the row's counted selection ran, and no arm inside that selection could have gone red if the
+property stopped holding. Each is now driven, each was watched failing on a defect of the class the
+sentence names, and each defect was constructed before the arm was trusted.
+
+**The format-tree permission, beside an identity delta.** The row says "an identity delta never
+makes the format-tree permission go away, because identity is not a section of the device half".
+The selection's three arms cannot reach it between them: the identity-only arm leaves the device
+half *empty*, so the permission is false there for want of a formats delta rather than because
+identity was held to one side, and the arm that does put identity beside a moved tree is about
+`InvariantDifference::is_only_the_format_tree`, a different type on which identity correctly does
+defeat the permission. The new arm moves `info.fingerprint.bus_path` **and** pushes a pixel format
+in one pair — which is also the everyday shape, since a replug is where a bus path moves — and
+holds `device_differs_only_in_the_format_tree()`, `verdict()`, `device.sections()` and the identity
+half's naming of the moved field. Seeded defect: `ProfileComparison::device_differs_only_in_the_
+format_tree` reading `self.verdict() == OnlyTheFormatTree && self.identity.is_empty()`, which is
+the conjunction D15 exists to refuse. Red on *a camera whose bus path moved lost the owner's
+format-tree ruling: device differs: formats; identity differs: fingerprint.bus_path* — and red
+**there and nowhere else**: under the seed the new arm was the workspace's only failure, so before
+this arm the tree had no witness for the sentence at all.
+
+**A facade that holds no camera, on a backend where holding one is invisible.** The fake shares
+one `CameraState` across every handle it hands out — "two `open` calls on one camera are two views
+of one device" — so the arm as it stood (open, drop, open, drop, read the controls) answers exactly
+the same on a facade that cached its first handle as on one that closed it. What separates the two
+readings is the count of descriptors, so the arm now drives a decorator holding an
+`Arc<FakeBackend>` whose `opens()` and `closes()` stay readable after `Facade::new` has taken the
+backend by value, asserts the three descriptors the three calls ask for, and then asserts the
+balance. Seeded defect: a `held: Mutex<Vec<Box<dyn Camera>>>` field on `Facade` that `controls`
+pushes its camera into instead of dropping it. Red on *the facade is still holding 1 of the 3
+camera descriptors it opened* (left 2, right 3), and again the workspace's only failure under its
+seed — which is the same measurement said about a whole workspace: a facade that kept
+its handles was a thing this tree could not notice. The three-descriptor assertion is there because
+`closes() == opens()` is also what a facade that opened nothing would report.
+
+**Arity is not identity, and on this fixture a substring is not identity either.** The g8 row says
+"the daemon's next listing stops naming *it*". Both loss callers asserted `FIXTURE_CAMERAS - 1` and
+nothing else, which is equally true of a daemon that dropped the camera nothing had happened to;
+worse, the fresh-client helper asserted that the *vanished* camera's spelling was still in the
+plain-`POST` body, and that assertion passed in both worlds because the fixture's second camera is
+the first one renamed and `cam:synthetic-basic-camera` is a prefix of
+`cam:synthetic-basic-camera-two`. Every listing this file reads back now goes through one helper
+that asks which machine it is about, by parsed `CameraId`: the two loss callers hand in the id they
+killed and must not find it, every other caller hands in `None` and must still find the camera the
+suite asks its questions about. Both arms were watched red on their own seeded defect. A fake whose
+`enumerate` drops the *last* camera when any camera is gone — right arity, wrong camera — leaves
+the pre-repair test **passing in 2.6 s**, which is the finding, and takes the repaired one red on
+*after two sessions ended under one subscription: cam:synthetic-basic-camera vanished mid-stream
+and the daemon's next listing still names it*; the second loss caller goes red on the same sentence
+after *a camera vanished under a photo*. A `wch_list` handler that rewrites the first id in the
+answer it returns takes the `None` arm red on *past the subscription bound: the daemon stopped
+listing the camera this suite asks about: [CameraId("cam:not-this-machine"),
+CameraId("cam:synthetic-basic-camera-two")]*.
+
+**What this seed does *not* say.** Run at workspace scope over the pre-repair tree, the wrong-camera
+seed takes four arms red, two of them `engine::device_loss`'s — the engine asserts the identity one
+crate down, against the backend seam. So the class was not invisible to the tree; it was invisible
+to *this row's counted selection*, which names one daemon test, and a gate row is only as strong as
+what its own selection runs (this is docs/11's "a rule enforced by the fake and violated by the
+real backend was green on both", in the register of selections rather than backends). With the
+repair in place the same seed takes both loss callers red as well, which is what the g8 row now
+holds.
+
+**Two sentences moved with the rows that carry them**, because a law has one home: the
+positive-half rationale at `crates/backends/fake/tests/corpus_replay.rs` no longer claims to
+rewrite "every `info` field the comparison looks at" — `id` is the one field the comparison
+deliberately excludes and `card`, `driver` and the node set are three it compares and the arm never
+rewrites — and the count of `CameraArg`-flattening verbs at `crates/cli/tests/calibrate.rs` is gone
+in favour of "every other camera-taking verb", per **N153**/**N158**. The third copy of the count,
+in this file, is not edited: the notes are append-only and this entry is the record that the figure
+was wrong.
+
+**Retires when:** a backend arrives whose second handle on one camera is not a second view of the
+first, which would give the facade arm a cheaper witness than the descriptor count.
+
+## N338 — Batch B's three arms, read with defects it did not choose, and the listing helper that had traded a claim for an absence
+
+**Date:** 2026-08-21. **Subject:** `crates/schema/src/profile.rs`'s
+`an_identity_delta_beside_a_format_tree_delta_is_still_only_the_format_tree`,
+`crates/engine/src/facade.rs`'s `the_facade_holds_no_camera_between_calls`, and
+`crates/daemon/tests/subscriptions.rs`'s listing helpers. **Class:** a repair to a criterion
+row's evidence, checked the only way a repair can be checked — by driving it with a defect its
+author did not pick, at workspace scope, and asking what the repair stopped asserting as well as
+what it started asserting.
+
+**Both new arms hold, and each is the tree's only witness for the clause it lands.** The D15 arm
+was driven with a leak of identity into `ProfileComparison::verdict` — the one word the document
+carries answering `Differs` whenever the identity half and the device half are both non-empty —
+rather than into the bool the batch seeded, because the row's clause is about the partition and
+not about one reading of it. Red on *a camera whose bus path moved lost the owner's format-tree
+ruling: device differs: formats; identity differs: fingerprint.bus_path*, and at workspace scope
+**1706 tests ran, 1705 passed and that arm was the one failure**: the three older arms in the
+row's own selection stayed green under a defect that makes the row's sentence false, which is the
+audit's finding measured from the other side. The facade arm was driven with
+`Facade::controls` calling `std::mem::forget` on the camera it opened — a descriptor the
+composition never gives back, rather than a field it keeps one in — and went red on *the facade is
+still holding 1 of the 3 camera descriptors it opened*, again the single failure in 1706. Two
+spellings of "the facade keeps a claim on the device" landing on one assertion is what says the
+ban is on the class: what the arm holds is the balance of descriptors, and a facade that stopped
+giving them back is that whether it stored them or dropped them on the floor.
+
+**What the daemon repair stopped asserting.** Before it, the plain `POST /` arm in
+`a_fresh_client_is_served_about` asserted that the asked camera's spelling was in the body — an
+accident for the two loss callers, since the surviving camera's id carries the vanished one as a
+prefix, but a real liveness claim for every caller that has lost nothing. The repair
+replaced it with a parsed identity question, which is right, and in the loss direction that
+question is an *absence*: `gone` must not be named. A listing of the wrong size on the transport
+that never subscribes had, on those two callers, nothing left to go red on, because the arity was
+asserted at the WebSocket caller one function up and never travelled to the third transport. The
+arity now lives in `the_listing_is_about_the_machine_that_is_left` with the identity, which also
+ends the second reading of `result.cameras` the two functions had been doing side by side: where a
+listing's cameras live in an answer is one fact and it is now read in one place. Driven all three
+ways from this file — `resolve::list` listing the first camera twice takes it red on *past the
+subscription bound: the daemon stopped listing its cameras* (left 3, right 2); `resolve::list`
+renaming the first camera it answers about takes the `None` arm red on *the daemon stopped listing
+the camera this suite asks about: \[CameraId("cam:not-this-machine"),
+CameraId("cam:synthetic-basic-camera-two")\]*; and a `FakeBackend::enumerate` that keeps the camera
+that left and drops one that stayed — right arity, wrong machine — takes **both** loss callers red
+on *cam:synthetic-basic-camera vanished mid-stream and the daemon's next listing still names it*,
+with the other seventeen arms in the file green under it.
+
+**The residual, named rather than papered over.** In the loss direction the helper holds a count
+and an absence, so a daemon that answered one camera that is neither the one that left nor the one
+that stayed would pass. Closing that needs the helper to know the *survivor*, which means handing
+`still_answers_about` the fixture rather than the `Ask` at every call site in the file, and the shape
+is worth its own change rather than a rider on this one. And the third transport's arity is as
+reachable as the assertion it replaces and no more: the plain `POST /` and the upgrade are the
+same jsonrpsee service over the same `wch_list`, so no defect with one home in this tree makes the
+two answer differently. What it restores is the parity the pre-repair arm had — a positive claim
+on that transport in both directions — not a new place for a defect to surface.
+
+**Retires when:** `still_answers_about` learns which cameras the fixture has, at which point the
+count, the absence and the survivor are one question and this helper's signature is the wrong
+shape for it.
+
+## N339 — A criterion row's count of its own tests, read by something at last
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/counted-selections.sh`,
+`scripts/gates/cases/counted-selections.cases.sh`, and
+`docs/15-claude-fable-automated-quality-gates-v3.md`:172 and Part 2. **Class:** a prose count of
+code that nothing reconciles (**N153**, **N158**), sitting three lines from the tool that measures
+the true figure.
+
+The gate-close review's finding #21. `phase-criteria.tsv`'s `what` column said "The row above
+selects nine tests" about a selection `cargo nextest list` answers with ten names; it was false on
+`bcd2826`, the one commit that ever wrote it, and stayed false until `f9abe48` deleted the phrase
+(note **N318**). What that repair did not leave behind was anything able to go red on the next one.
+`counted-selections.sh` already lists every `tests` row's selection, counts what matched, and
+prints the number in a `note` line three lines from the sentence it falsifies — and compared it to
+nothing but zero. The instance was repaired and the class was ungated, which is AGENTS rule 1's
+subject.
+
+**The rule, stated as a class rather than as the spelling that was caught** (**N249**, rubric
+A17): in a `tests` row, a cardinal that immediately qualifies `test`/`tests` is a claim about how
+many tests that row selects, and it must equal the number the predicate measured for that row.
+Digits or words, hyphenated compounds included, anywhere in the cell, and through this table's own
+emphasis markers, because `23 tests`, `five tests` and `**1381 of 1381 tests**` are one claim in
+three spellings — a rule keyed on "the row above selects" would have banned a phrase rather than a
+defect.
+
+**A rate is not a count.** `one test per matrix cell` and `one test apiece` say how a row's tests
+spread over some other population and nothing about how many of them there are, so they are
+exempt; four rows are worded that way — `g4`'s subscriptions row says "one test apiece" and its
+signal-parity row "one test per signal", and `g5`'s two matrix rows say "one test per cell" and
+"one test per matrix cell" — and every one of them would otherwise have had to lie about itself
+to satisfy a rule meant to keep it honest. The
+exemption has a passing arm of its own, with both of its numbers wrong *as* counts, because an
+exemption nobody drives is an exemption nobody checked.
+
+**Three limits, in the predicate's header rather than left silent.** A `command` row has no
+measured selection, so the claim says nothing about one, and the phrase the table carries in such
+a row — g8's "Not one test the row above selects links `webcam-handler-v4l2`" — is a negation with
+no number beside it to compare against. `zero` is out of the lexicon, because a row that really
+selects none already goes red at the check above with a sentence about its own selection, and what
+is left for this rule to read is g4's "a reader who tidies this to `binary(webcam-handler-client)`
+selects nothing and this row runs zero tests", a hypothesis about a mis-edit. And the lexicon of
+number *words* stops at `ninety-nine`; every count in this table above twenty is written in
+digits.
+
+**Priced against the whole table before a line of it was written**, from the selection counts this
+predicate's own `note` lines had already printed in the session's `just ci` log, so the rule cost
+was known rather than discovered: eleven cardinal-qualified `test(s)` phrases live in `tests` rows,
+four of them rates, six of them true of their row, and exactly one wrong — g6's "each passed
+**1381 of 1381 tests**", a count of the workspace suite standing where a count of this row's
+selection is read. That row was reworded to "1381 of 1381 **workspace** tests" in the same batch,
+which is the remedy the refusal names: say which population the number counts, so that it stops
+qualifying the bare noun. Run over the tree afterwards, the predicate came back `PASS` having
+compared six counts.
+
+**The arms, and what the redness is caused by.** Three failing arms seed a number the stub
+lister's single matched test cannot hold — `3 tests`, `seven tests` and `**eleven** tests` — so
+that the digits, the words and the emphasis are each driven rather than one of them standing for
+the other three; each names the sentence it goes red on, `its criterion says '<phrase>'`. Two
+passing arms hold the other direction: a rate over another population, and the remedy the refusal
+prescribes, `**1381 of 1381 workspace tests**` in a row that selects one. That the red comes from
+the new comparison and not from something else in the predicate was checked by hand rather than
+assumed: the same seeded table run against a copy of the predicate with the comparison block
+removed reports `PASS`, while the shipped one reports `FAIL … selects 1 test(s), and its criterion
+says '3 tests'`.
+
+**docs/15's copy of the same false figure is corrected in the same commit.** Its Part 2 row for
+the stats criteria still read "the criterion row claiming both-backend enforcement selected nine
+tests"; N318 had taken that figure out of the table and left this one standing. It states the
+negation the row actually holds now, count-free, with a dated correction beside it. Note **N298**
+carries the same figure and is deliberately untouched: the notes are append-only case law and were
+right about what was measured that day.
+
+**Retires when:** a `tests` row wants to state a count of some population other than its own
+selection and cannot find a wording that says so — at which point the exemption list is the thing
+to argue about, not the rule.
+
+## N340 — The ban on a count of a row's own tests was a ban on that count with nothing after it
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/counted-selections.sh`'s `counted_test_claims`,
+`scripts/gates/cases/counted-selections.cases.sh`, and
+`docs/15-claude-fable-automated-quality-gates-v3.md`'s Part 2 row for the same delta.
+**Class:** a rule stated as a class and implemented as a spelling (**N249**, rubric A17) — found
+by the adversarial reading the repair-verification loop requires of every repair before it
+commits, on the commit that landed the class rule itself.
+
+The delta reviewed here is the one that closed the gate-close review's finding #21: a `tests`
+row's own count of its tests, compared against the number the same predicate had already measured
+and printed three lines above. It was landed as a class rather than as the phrase that was caught
+— digits and words, hyphenated compounds, anywhere in the cell, through this table's emphasis
+markers — and it shipped with five arms, three red and two green, each naming its sentence.
+
+**The word reader kept a comma at both ends of every word.** The reason was stated and was a real
+one: `1,381` is how this table writes a thousand, and a strip that took punctuation off a word
+would take the separator with it. What the reasoning missed is that a thousands separator only
+ever stands in the *middle* of a word, so protecting it at the two *ends* protected nothing and
+cost the noun: `tests,` is not `tests`, and the phrase finding #21 exists for escaped the ban the
+moment the sentence ran a clause on after it. Driven rather than reasoned, against the shipped
+predicate with the case file's own stub lister: a table whose one `tests` row selects one test and
+whose prose reads `the row above selects nine tests, one per hole` **passed**, exit 0, with the
+summary line reading `checked 0 count(s)`. The same seed against the same predicate with the comma
+taken out of the two character classes is red, naming `its criterion says 'nine tests'`, so the
+redness belongs to the strip and not to something else in the file.
+
+**The same keeping was hiding a refusal in the other direction**, which is why the repair is one
+edit in a shared function rather than one in the noun check. `clean` is applied to the number, to
+the noun and to the word after it, and the word after it is what the rate exemption reads. A
+comma'd spelling of g4's signal-parity sentence — `one test, per signal`, which is how the same
+clause gets punctuated the day somebody sets it off — reaches the exemption with the comma still
+stuck to `per`. Under the shipped strip it was silent for the wrong reason, the noun carrying a
+comma of its own; under a repair that read the noun through punctuation and the rate through none
+it would have been refused as a count of one against a row `cargo nextest list` answers with two. So the arm that holds this is green rather
+than red, and it is the arm that says the fix went in at the right level.
+
+**A comma is punctuation like any other now**, stripped from both ends with the full stop, and the
+separator inside a word is untouched by a strip of its ends. That property has an arm of its own,
+and it is a *failing* arm on purpose: the seed is `the 1,381 tests this row selects` in a row that
+holds one, and the sentence it names is `its criterion says '1,381 tests'` — the phrase as the
+table writes it. A reader that went back to deleting every comma would print `1381 tests`, go red,
+and be reported as red for a sentence it did not name, which is the only way this claim can be
+checked from outside the function (**N240**–**N243**).
+
+**One limit was left silent and is now stated with its reason.** The rate exemption is `per` and
+`apiece`, and `each` — the plainest English spelling of the same rate — is deliberately not in it.
+Widening it would be the safer-looking edit and is the wrong one: `each` is also the distributive
+adverb, so `the three tests each drive a real refusal` is a true count of the row that the wider
+exemption would swallow in silence. The trade is a loud refusal of honest prose against a quiet
+acceptance of false prose, and the refusal already names the remedy — `per` says the rate, or name
+the population the number counts. The header's limits are stated without a cardinal in front of
+them now, for the reason this entry is an example of: the count said `two` while the sibling
+document said `three`, and a count of one's own paragraphs drifts the first time one is added.
+
+**The hole was load-bearing on the table as it stood, which was not the expectation.** Run over
+today's tree, the comma-keeping reader and the comma-stripping one disagree by exactly one row,
+and that row is g8's: "… `VideoFormat::ALL` × `CapReached::ALL` (note **N298**) — four tests,
+counted in the prose because a lone `test()` clause carries no alternation for
+`counted-selections.sh` to split into branches, so nothing would have gone red the day that arm
+was renamed". A criterion written in this same batch **to be held by this rule** was not being
+held by it, and the row said so in as many words while the predicate read past it. The claim the
+repair's own
+`docs/15` row made — that the rule *found* g6's `**1381 of 1381 tests**` — is not what happened
+and now says so: the row audit had already reworded that cell in the same batch, as this
+criterion's paired repair, so the rule has never fired on the shipped table. The counterfactual is
+worth more than the claim was and was driven for it: `f9abe48`'s own cell, seeded into a table
+this predicate reads, is red naming `1381 tests`, and `cargo nextest list` answers that row's
+selection with 5.
+
+**Retires when:** nothing retires it. What generalises is narrower and sharper than "state the
+rule as a class": a rule *was* stated as a class here, in the header, in the note and in the
+commissioning row, and the implementation still banned one spelling, because a protection written
+for one character was applied at both ends of every word. When a word reader keeps a character
+that the rest of the reader treats as punctuation, ask which position that character is being kept
+*in* — the answer here was "the middle", and the code was written for "the ends".
+
+## N341 — The branch check banned an alternation, and the defect was a criterion naming a test
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/counted-selections.sh`,
+`scripts/gates/cases/counted-selections.cases.sh`. **Class:** a ban that names one spelling of a
+defect rather than the class of it (**N249**, rubric A17) — found by the adversarial reader of the
+batch that landed the branch check, inside a repair that had just walked into it.
+
+`counted-selections.sh` proves that no criterion row's selection has gone to zero, and — the
+delta this batch landed — that every branch of an alternation in a row's `test()` regex still
+names something the row selects. The branch loop was entered only for a regex containing a `|`.
+So a row that reaches a claim through a **lone** `test()` clause standing beside another disjunct
+held that claim by nothing: the row stays above the zero-selection check on the strength of its
+other disjuncts, and the day the lone clause's test is renamed the criterion goes on naming a test
+the listing no longer holds, with the gate green. The defect is *a criterion naming a test nothing
+checks it still selects*; an alternation is where it was first seen and not what it is.
+
+**The population, measured on the table as this batch leaves it.** The `tests` rows carry 143
+`test(/…/)` clauses between them: 51 contain a `|` and were checked, and 92 do not and were not.
+Of those 92, **25 stand in rows whose selection is a union**, which is the subset whose rot the
+zero-selection check above cannot see — a clause in a conjunction cannot come up empty while its
+row selects anything at all. The 25 are spread over 16 rows: `g3` (the sweep that announced
+itself, two clauses), `g4` (the DTO round-trip fixtures; the OpenRPC/T5 pair; the transport code;
+the two unasked-for announcements, two clauses; the one declaration and two inventories, three
+clauses; D12's actor threads; D9's two locking protocols; the netlink hostile-bytes fixtures, two
+clauses; the deferrals discharged in place, three clauses), `g5` (the three halves of the
+preview), `g6` (the `--json` failure document, two clauses), `g7` (D14's vocabulary has one home,
+two clauses), `g8` (the device-loss contract; the two fields no pure core can fill) and `g9` (the
+behavioural half of D20's partition).
+
+The reader that found this named six of those rows — the `g5`, `g6`, `g7`, both `g8` and the `g9`
+one. That is exactly the set whose union is spelled with the word `or`. **nextest spells union
+`+` as well**, and ten further rows reach a claim through a lone clause that way, so the live
+population was two and a half times what the finding said. The measurement is the reason the
+repair is the guard deleted rather than the six rows patched.
+
+One of the sixteen is `g8`'s "the two fields no pure core can fill", which **this same batch had
+just widened** to select `imaging::video::tests::both_containers_report_every_cap_in_the_vocabulary`
+one crate down, and whose prose says in as many words that a lone `test()` clause carries no
+alternation for this gate to split. The widening put a claim into a row and nothing held the row
+to going on naming it — the defect being repaired, reproduced inside the repair, which is note
+**N10**'s shape at one more nesting level.
+
+**What landed.** The `|` guard is gone: the population is every `test(/…/)` clause in a selection,
+split into the branches it is a union of, and a clause with no `|` splits into itself —
+`expand_alternation` already answered that way, so this is a deleted line rather than a second
+code path beside the first. Both refusals inherit the widened population unchanged and count the
+clause before refusing it: a clause spelled outside `[A-Za-z0-9_:^$()|]`, the alphabet on which
+POSIX EREs and Rust's `regex` agree character for character, and a clause whose parentheses do not
+balance, are each a **counted refusal and never a silent pass**. The new population is named and
+counted in the summary beside the branch count, so the day it goes to zero is a line in the report
+rather than a quiet green.
+
+Measured over the real table, before and after: `164 phase-gate test selections / 168 named
+branches / 451 items examined, PASS` becomes `164 selections / 143 test(/…/) clauses / 260 named
+branches / 686 items examined, PASS`. The 92 extra branches are the 92 lone clauses. **The whole
+table stays green**: not one of the sixteen rows names a test the listing no longer holds today,
+which is what makes this a hole closed rather than a hole found.
+
+**What the arms go red on.** Four, in `cases/counted-selections.cases.sh`, driven against the
+predicate before the guard came out and watched to stay green — which is the failure rule 2 asks
+for — and driven again after it:
+
+- `fail_case_a_lone_test_clause_names_a_test_the_row_no_longer_selects` seeds a union whose other
+  disjunct still selects, beside a lone clause naming nothing, and goes red on *"none of them is
+  one its branch `test(/zzz_a_lone_clause_nothing_selects/)` names"*;
+- `pass_case_a_lone_test_clause_that_still_names_something_stays_green` seeds two lone clauses
+  joined by `+` that both name something, and stays green — without it, a widening that refused
+  every clause it found no `|` in would satisfy the arm above and turn most of this table red;
+- `fail_case_a_lone_test_clause_outside_the_alphabet_is_a_refusal` goes red on *"`test(/^slug[0-9]::/)`
+  uses `[-]`"*, the alphabet refusal reaching a clause that is not a union;
+- `fail_case_a_lone_test_clause_with_unbalanced_parentheses_is_a_refusal` goes red on *"unbalanced
+  parentheses — `test(/^(slug::/)`"*, which is a regex that reached the splitter for the first
+  time with this widening.
+
+Each names its own clause in the sentence it claims, so the two refusal arms are told apart from
+their alternation-shaped siblings by the sentence and not by the arm's name.
+
+**The residual, named rather than left silent.** `test(name)` and `test(=name)` carry no regex,
+are not in this population, and a rename inside one is not caught by this check. There are four of
+them in the table and every one stands in a conjunction, where a name that stops matching takes
+the whole selection to zero and the check above fails with its own sentence. The day one lands
+beside a disjunct is the day that stops being true; the remedy is to widen `selection_regexes` and
+match those clauses as the substrings nextest reads them as.
+
+**Retires when:** the residual above is closed, or a row lands that puts a `test(name)` clause
+beside a disjunct — at which point this note is the record of what was already known about it.
+
+## N342 — A cardinal in a doc comment beside the thing it counts, priced as a class and declined
+
+**Date:** 2026-08-21. **Subject:** `crates/schema/src/camera.rs:344`,
+`crates/schema/src/video.rs:610`, `crates/schema/src/session.rs:95`,
+`crates/daemon/src/preview.rs:1215` and `:1218`. **Class:** a count of something the compiler owns,
+written in prose beside it, where nothing reconciles the two — **N319**'s class, found again in
+four more places by the P7/P8/P9 close review.
+
+**What was true and what was not.** Three of the five figures held when they were found:
+`CameraFingerprint` carries five fields and `describes_the_same_device` did contrast one against
+"the other four"; `RecordingEnd` carries five members and `cap_reached` is `Some` exactly on `Cap`,
+so it is `None` for the other four; `SweepAdjustment` carries four variants. Two did not.
+`preview.rs`'s `Ended::revive` called itself "a total function over five values" and said "the
+other four each say why not" about an enum with **six** members — and the sentence's own
+enumeration lists five reasons while claiming four. `ca7fc89` is the one commit that ever wrote
+either phrase, and it is the commit that added `HandedOver`: the author counted the five endings
+that were there and added the sixth in the same diff. The number was false at the moment it was
+written, the same shape as the criteria row **N318** deleted.
+
+**The class was priced before it was declined**, the way **N222** priced its two rules. Measured on
+this session's working tree immediately before the repairs below, over the 171 `.rs` files under
+`crates/` and `xtask/`, which carried 34 581 doc-comment lines:
+
+- a cardinal word `one`–`twelve` anywhere in a doc-comment line: **5 647** lines, or **2 100** if
+  `one` is excluded, because `one` is this repository's ordinary word for "a single" and accounts
+  for 4 311 of the occurrences on its own. A reader over that population is not a rule, it is a
+  rewrite of the prose.
+- the narrowest phrase matcher that sees all five instances — `the other <cardinal>`, or
+  `<cardinal>` immediately qualifying one of sixteen nouns (`variants members spellings shapes
+  reasons endings schemes fields arms kinds values names columns rows verbs formats`): **137**
+  lines.
+- the same matcher over the tight seven (`variants members spellings shapes reasons endings
+  schemes`): **65** lines, which sees four of the five — it misses `preview.rs:1215`, one of the
+  two *wrong* ones, because its noun is `values`.
+- the same tight matcher confined to doc comments **inside** a `closed_vocabulary!` block, which
+  is the population an exhaustive walk could afford: **2** lines, and both of them are figures
+  that were **true**. Every false one is outside every such block.
+
+**A hand read of all 65** says why the affordable middle does not work either. Twenty-two of them
+qualify something the compiler owns — `HintKind`'s two variants, D10's two sink variants,
+`FormatUnsupported`'s three shapes, the two members of a vocabulary. The other forty-three are
+prose about things no compiler counts ("for two reasons", "two spellings of one authority", "the
+same three reasons"), external facts (`crates/web/src/lib.rs:188`, about the ecosystem's two
+module spellings), or **dated records of what used to be true**: `crates/cli-core/src/lib.rs:574`
+narrates the five spellings that were written out before a sixth scheme joined
+`SelectorScheme::ALL`, which is a correct sentence a reconciler would report as a violation. One
+of the twenty-two, `crates/daemon/src/server.rs:143`, is in the population at all only because
+`\btwo\b` fires inside "twenty-two" — the matcher's own artifact, and a live count of the wire
+surface besides. No line-level matcher separates those four populations, so a predicate over this
+class produces sixty-five hits that each need a human, with no `#[expect]`-shaped way to record
+the adjudication in a doc comment. That is a review, not a gate.
+
+**So the class is declined with the numbers above, and the five instances are repaired the way
+N319 repaired its own — the number goes**, because not one of the five sentences is about the
+number: what `describes_the_same_device` is arguing is that a conjunction fails *open* the day the
+fingerprint grows a field, which is exactly the day a written-out count goes wrong. Left standing
+deliberately: `preview.rs:1213`'s "passed all 1 329 tests (note **N117**, mutant M11)", which is a
+dated measurement with its provenance beside it rather than a claim about this tree, and is the
+one shape of number **N158** admits.
+
+**One more of the same class was left for the owner here and is repaired before this commits
+instead**: `crates/schema/src/camera.rs`'s `Lossiness::of` said "The five arms are the five
+formats [`PixelFormat`] names". `PixelFormat` does name five formats, and `Lossiness::of` does
+have five arms — but they are not the same five, because `MJPG | JPEG` share one arm and the
+fifth arm is rule 6's payload-carrying fallback. The count is right and the identification is
+wrong, which is a repair with a judgement in it rather than a deletion, and this note deferred it
+for that reason. The adversarial read this repair batch owes rule 8 made the judgement instead;
+note **N344** records what the sentence now claims, which side asserts it, and why a reconciler
+over cardinals would have passed the line.
+
+Removing the five took the tight matcher from 65 lines to 62 and the sixteen-noun one from 137 to
+133, and the two arithmetics differ because the two populations do. The tight seven saw four of
+the five, so four lines left it and one this batch added itself joined it —
+`crates/daemon/tests/subscriptions.rs`'s new doc comment, whose "for two reasons" the matcher
+reads: 65 − 4 + 1 = 62. The sixteen-noun matcher saw all five, and a sixth line left it that no
+repair in this note removed, `crates/schema/src/camera.rs`'s `Lossiness::of` doc, which note
+**N344** rewrote in this same commit; two joined it, the `subscriptions.rs` one and
+`crates/imaging/src/compare.rs`'s `HEADER_ONLY_FIXTURE_BYTES` doc, whose "derived from the two
+formats' own framing" it reads as `two formats`: 137 − 6 + 2 = 133. That is the arithmetic
+reconciling the claim that these five were in those populations.
+
+**Retires when:** a reader exists that can tell a live claim about a type from prose, from an
+external fact and from a dated record without a hand adjudication. The four figures above are what
+it has to beat: 5 647 / 137 / 65 / 2, with the affordable end catching neither wrong number.
+
+---
+
+## N343 — The header-only fixture weighed whatever it liked, under a bound three orders of magnitude away
+
+**Date:** 2026-08-21. **Subject:** `crates/imaging/src/compare.rs`. **Class:** an expectation with
+nothing to reconcile it (**N252**), left standing when the wrong number beside it was deleted.
+
+`limits::MAX_PHOTO_DECODE_BYTES`'s doc comment described its fixture as "a 72-byte PNG" and
+`png_declaring` emits 68; **N319** deleted both numerals, which was right about the prose and left
+`compare.rs` asserting only `bytes.len() < 1_024` about the fixtures it hands a decoder. That bound
+would pass a builder that had grown nine hundred bytes of raster — and the arm reading it,
+`a_photograph_declaring_more_raster_than_this_build_will_allocate_is_refused`, exists precisely to
+prove that a *header* declaring an impossible raster is refused. Fed a file that carried the
+pixels, it would still have been green, about a different claim, and the sentence it prints would
+have been describing something that was no longer there. Re-typing a corrected numeral into either
+prose would have changed nothing: nothing in the tree read it.
+
+The fixtures are now tied to a committed table, `HEADER_ONLY_FIXTURE_BYTES`, whose rows are derived
+from the two formats' own framing rather than measured from the builders (N252). PNG: the 8-byte
+signature plus three chunks, each a 4-byte length, a 4-byte type, its body and a 4-byte CRC —
+IHDR's body is the two 4-byte extents and five bytes of colour description (13, so 25), IDAT's is
+the shortest zlib stream that decodes to nothing, being a 2-byte header, a 5-byte final stored
+block of length zero and the 4-byte Adler-32 of the empty input (11, so 23), and IEND's is empty
+(12); 8 + 25 + 23 + 12 = **68**. JPEG: SOI and EOI are bare 2-byte markers and every other segment
+is a 2-byte marker and a length field counting itself and its body — DQT 67 and 69, SOF0 17 and 19,
+each of two DHTs 20 and 22, SOS 12 and 14; 2 + 69 + 19 + 44 + 14 + 2 = **150**. Both figures were
+derived before the arm was run and both matched the builders on the first run, which is the
+reconciliation the loose bound could never perform.
+
+`a_header_only_fixture_weighs_exactly_what_its_format_frames` drives each builder at several
+extents rather than one, because the table's last sentence is that the length does not depend on
+the declared size — PNG writes the extents into IHDR's fixed 4-byte fields and JPEG into SOF0's
+fixed 2-byte ones — and that sentence is what makes one row per format the whole table. The
+refusal arm reads the same table for its own fixture, with a sentence about what its mismatch
+would cost rather than a second copy of the law.
+
+Driven red three ways, each reverted: appending one byte after IEND fails
+`a_header_only_fixture_weighs_exactly_what_its_format_frames` on "`png_declaring(1, 1)` is not the
+length PNG's own framing gives it" (69 against 68) and the refusal arm on "the Png fixture is not
+the length its format frames" — both of which the old `< 1_024` accepted. Inserting one byte before
+EOI fails the same two on the JPEG sentences at 151 against 150. Making the extra byte conditional
+on `width > 1_000` passes at (1, 1) and fails at `png_declaring(4096, 4096)`, which is what says
+the several-extents loop is load-bearing rather than decorative.
+
+**Retires when:** a third format grows a header-only builder without a row in the table, or the
+builders are replaced by committed corpus — `corpus/images/` holds photographs this build could
+have taken, and a header describing 200 000 pixels on a side is not one of those, which is why
+these are built in code.
+
+## N344 — The walk over the preview's endings was a hand list that a new ending joins without it
+
+**Date:** 2026-08-21. **Subject:** `crates/daemon/src/preview.rs`'s
+`exactly_one_ending_may_be_followed_by_a_fresh_driver_and_every_other_ending_says_why_not`, and
+`crates/schema/src/camera.rs`'s `Lossiness::of`. **Class:** a test that says it is walking a
+vocabulary while holding a list of the members somebody remembered — found by reading the repair
+that rewrote the doc comment the test is the arm for.
+
+The cardinality batch note **N342** records repaired `Ended::revive`'s doc, which
+had claimed "a total function over five values" and "the other four each say why not" about an
+enum with six members. Reading it adversarially turned up the arm underneath: the test walking
+`revive` was six bare `assert_eq!`s, and the comment above them argued that the list was safe
+because "a new ending added to this enum fails to compile here until somebody says which of the
+two it is". That sentence was false. The compile failure lands in `Ended::revive`'s own match and
+in `Ended::name`'s, twenty lines up; a list of `assert_eq!`s compiles perfectly well one member
+short. **Seeded, at workspace scope:** a seventh ending added to `Ended`, with the arm in `name`
+and the arm in `revive` that its author would add in the same diff — which is precisely what
+`ca7fc89` did when it added `HandedOver` — and the arm passed, covering six endings of seven,
+with the count in its own name gone stale and nothing red. It is the same defect twice in one
+file: the doc comment counted a vocabulary it did not walk, and the walk did not walk it either.
+
+The list stays a list, because `Ended` carries a payload variant and `closed_vocabulary!` generates
+no `ALL` for one — `SweepAdjustment` solved that with a discriminant vocabulary and a `kind`
+method, which is more machinery than a private enum inside one module earns. What closes it is
+`every_ending_is_spelled_out_here`, an exhaustive `match` over `&Ended` whose arms do nothing and
+which is called on every row of the table: an ending added to the enum now stops *this* arm
+compiling, which is the sentence the comment had been claiming. Under the seed above it goes red
+as `non-exhaustive patterns: &preview::Ended::Wedged not covered` at the match's own line. The
+residual is stated where it lives: what this forces is that whoever adds an ending stands in front
+of the row, not that they choose it well.
+
+**The six assertions also had no sentences at all**, which is rule 2's other half: seeding
+`Ended::Deferred` into `revive`'s reviving arm produced `left: IfWatched, right: Never` and nothing
+else, from an arm whose whole subject is that each of these answers was chosen for a reason. They
+are now one loop over a table of chosen answers, and the seed reads "a driver that ended because
+the camera was busy with other work answers the wrong thing about whether the feed it gives up may
+be handed straight to a fresh driver". The test's own name lost its count with the doc comment's,
+for the reason note **N342** gives.
+
+**And one sentence the batch left for the owner is repaired rather than deferred:**
+`Lossiness::of`'s doc said "The five arms are the five formats [`PixelFormat`] names". Both
+cardinals were right and the identification was wrong — `MJPG | JPEG` share an arm and the last arm
+is rule 6's payload-carrying fallback rather than a format — so the sentence taught a reader that
+the match is one arm per format, which is the reading that makes the fallback look like a sixth
+format instead of the thing that carries an unrecognised FourCC. The argument it is making is
+about the two *sets* being the same set, which is what `imaging`'s
+`the_format_ranking_never_prefers_a_format_this_crate_cannot_decode` asserts from its own side in
+both directions; the sentence now makes that claim and says the arms are not one per format,
+carrying no count either way. A count that is right and an identification that is wrong is the
+shape worth naming: a reconciler over cardinals would have passed this line, and a reader would
+still have been misled.
+
+**Retires when:** nothing retires it. What generalises is the question to ask of any test whose
+comment claims a compile-time property: which file does the compiler actually stop in, and does
+the author it stops there have any reason to come to this one.
+
+## E22 — The P7e/P8d/P9d gate-close review: six lenses, 128 candidates, and four defects no per-batch reader could have seen, 2026-08-20/21
+
+docs/11 is the shape this follows, and rubric Part E asks for it by name: *the review's own
+record is a dated evidence entry — candidate count, verdict split, absence lists — written
+before the reconciliation*. The reason that row exists is G4, three gates back, and it is worth
+restating here rather than citing, because this entry is the only thing that will hold this
+review's arithmetic. **G4's review ran without one.** Its findings landed as four notes plus two
+amendments to a transcript, each argued well locally and none of them holding the review whole;
+the entry was written late, as **E14**, and what it could not recover it says so about — the
+candidate count is gone, because that pass ran its refutation *inside* the find pass and a
+candidate that died left nothing behind. This review's raw record lives in a session scratchpad
+that is wiped between sessions and is not in the repository. Whatever is not written down here is
+gone on the same terms.
+
+### The preflight, and what of it is recoverable
+
+The review ran against the tree at **`5496c02`**, the commit `f9abe48`'s repairs landed on top of,
+with the phases' own gates in force — **G7, G8 and G9 of docs/13**. It was read-only by
+construction: the real checkout was never edited (`git status --short` empty at the start and the
+finish of every lens that says so), and the work that needed a mutated tree worked in a copy —
+`/var/tmp/wch-g7/t1`, a `git archive` of `5496c02`, for the selector and partition lens;
+`/var/tmp/wch-g9/probe`, a Playwright project on the repository's own pinned toolchain, for the
+workbench lens; and `/home/pwnall/wch-review-scratch/tree` with its own target directory for the
+eight seeded mutations, which is N278's process rule.
+
+**The record carries no preflight section.** It begins at its first `CONFIRMED` heading; the
+populations are stated per lens, in each lens's own `POPULATIONS` block, and the run-level figures
+below come from the workflow's journal rather than from the record. Every `file:line`, count and
+command below was re-read against `5496c02` for this entry rather than transcribed out of the
+record, because a record nothing reconciles is the thing this entry exists to prevent — and the
+re-reading kept catching it out. **Seven corrections to the record are stated below, each in the
+sentence it belongs to, and they are these**: `facade.rs`'s `#[cfg(test)]` begins at 427 and not
+the record's 436; `wideCameraId` is bound at line 58, which the record's "only at 1816 and 1880"
+leaves out; the selector test module holds fourteen tests and not eleven; `client.spec.mjs`
+carries nine assertions of the closed-connection sentence and not eleven; the browser half has
+twelve `default:` arms and not eleven; the `use crate::` command the record states as returning
+nothing at all returns fourteen statements at `5496c02`; and the `#flow-start` absence the file
+refutes outright, which is why finding 17 stands on the verifier's own reproduction instead. Six
+land on the wording of a claim whose substance holds; the seventh does not survive at all.
+**Whether those are all of them cannot be known from here**: the record is not in the repository
+and goes with the scratchpad, so any residual is unlocatable by a reader and this entry does not
+claim there is none. No finding turns on the seven, because the verifier re-ran rather than
+re-read, which is the reason a record this loose still produced twenty-six findings that held
+through a second stage.
+
+The one caveat the record writes down in so many words is the row lens's stated non-coverage —
+*"I did not run `selftest.sh`, `just ci`, `just mutants`, or any phase gate end to end (house
+rule / 18-minute cost), and I drove no camera"* — which is Part E's standing hardware caveat
+arriving as a sentence about one lens instead of as a sentence about the review. That is a defect
+in the record, it is stated here rather than papered over, and the shape Part E wants is
+docs/11 §1.3, which names the baseline once for all twenty-two lenses.
+
+**The six lenses and the population each was walked over** (rule 7 — an exhaustive `match`, a
+generated `ALL`, or a selection derived from the tree):
+
+1. **G7, population one** — the selector vocabulary walk, closed by the `SelectorScheme::ALL` that
+   `closed_vocabulary!` generates (the macro at `crates/schema/src/vocabulary.rs:67`, invoked at
+   `selector.rs:37`), with the reader set derived from the tree by grep over `.rs`, `.md`, `.js`,
+   `.json`, `.sh` and `.html`; and the
+   identity/device projection destructuring in `schema::profile`, cross-read against
+   `profile-partition-is-closed.sh`'s four declared partitions.
+2. **G7, population two** — every `pub` item `engine::facade` exports and every `pub fn` on
+   `Facade`, closed by `impl Facade` at `crates/engine/src/facade.rs:120-425`; the stability
+   table's own rows, closed by the gate's own `pub mod` walk; and both new predicates'
+   numbered claims plus every hook in `rust-imports.awk`, attacked from the other side.
+3. **G8** — the instruments, closed by four generated vocabularies (`MetricName::ALL` at 5,
+   `PhotoFormat::ALL` at 3, `Fault::ALL` at 12, `CapReached::ALL` at 3), every field of
+   `StreamStats` (7), `IntervalStats` (8) and `RecordReport` (9) traced to a producer, an
+   assertion and a `required` entry in the committed schema bundle, and D19's five rig-testable
+   sentences — the last of which is a selection derived from design text and is `declared` as
+   such, not a compiler-closed set.
+4. **G9** — the operator's workbench, driven in the pinned Chromium against a live
+   `webcam-handler-daemon --backend fake` over the `vivid` and `chicony-rgb` profiles rather than
+   read: every button and writing widget, every RPC, every field rendered off a wire answer, every
+   `/preview` and `/session-photo` URL. The block declares **five populations and writes out
+   four**; the fourth line is truncated mid-word and the section goes straight to its absences,
+   so what the fifth population was is not recoverable.
+5. **Cross-phase, the populations behind the rows** (rule 7 turned on the gate table) — docs/13's
+   seven `Proves:` bullets read whole against all 50 `g7`/`g8`/`g9` rows of
+   `scripts/gates/phase-criteria.tsv`, in both directions, plus a per-phase predicate census by
+   one `awk` over all 274 lines of the table as it then stood.
+6. **Cross-phase, review the repairs** (rule 8) — the nine commits `a71748a`…`5496c02` read as
+   diffs, the notes' measurements re-run, and this session's new code mutated at workspace scope.
+   Those nine commits and the eight per-batch reviews the section below counts are two
+   populations rather than one: docs/13's execution record maps sub-milestones to commits
+   many-to-one, and the eight batches it names run `1ddf472`…`556e4d2` while the lens read
+   `a71748a`…`5496c02`. Both figures are stated here and no mapping between them is derived.
+
+### The census
+
+**128 candidates considered · 102 killed by their own author · 26 reported · 26 independently
+verified, of which 9 confirmed as stated, 15 narrowed, 2 refuted · 34 absence claims.**
+
+The per-lens arithmetic is read out of the review workflow's own journal — the six `Find`-stage
+results, each of which reports its own `generated` and `self_killed` — and not out of any prose
+about the run:
+
+| lens | generated | self-killed | reported |
+|---|---|---|---|
+| G7, population one — selector vocabulary + identity/device projection | 17 | 13 | 4 |
+| G7, population two — the facade's export list and its two new predicates | 24 | 20 | 4 |
+| G8 — the instruments | 15 | 13 | 2 |
+| G9 — the operator's workbench | 27 | 22 | 5 |
+| cross-phase — the populations behind the rows | 23 | 17 | 6 |
+| cross-phase — review the repairs | 22 | 17 | 5 |
+| **total (6 of 6)** | **128** | **102** | **26** |
+
+**Self-kill rate 102 of 128, 80%. G6's was 204 of 290, 70%** — the figure Part E quotes when it
+says a lens must attack its own candidates before reporting. Two runs are not a trend and the
+difference is not offered as one; what the second run does establish is that the first figure was
+not an artefact of G6's twenty-two-lens breadth, because six narrow lenses over three phases
+discarded candidates at the same rate or better.
+
+**The verifier stage: 26 in, 26 out — 9 confirmed (35%), 15 narrowed (58%), 2 refuted (8%).**
+G6's second stage returned 38 confirmed, 35 narrowed and 13 refuted of 86 — 44%, 41% and 15%.
+The band moved toward *narrowed*, which is the direction Part E predicts when it calls the second
+stage "mainly an editor": here the independent verifier's usual answer was that the finding was
+true of something smaller than its headline said, and only two candidates died at that stage.
+Twenty-six is a small population and this is a comparison of two runs, not a rate.
+
+### What became of the twenty-six, at `f9abe48`
+
+Findings are numbered here in the record's own order — 1 to 9 the confirmed, 10 to 24 the
+narrowed, 25 and 26 the refuted. That numbering exists in the scratchpad record alone, so every
+number below carries its note beside it: the note is what survives, and all nineteen are in this
+file.
+
+Counted from the disposition table this session built by reading each finding against the tree at
+HEAD: **19 repaired, 4 landed partial with the residue stated, 3 accepted without a repair.** The
+three accepted are finding 11 (N325, the `usb:` asymmetry, an acceptance pending an owner ruling
+because the wire shape is the thing that would have to move) and the two refuted, which are
+recorded below because Part E says a refuted finding is reported anyway. The four partials are
+findings 12, 21, 23 and 24 — notes N319, N318, N327 and N319 — each of which is a *class* the
+repair closed one instance of and whose reader does not exist yet; each says so in its own note
+rather than in a summary. The reasons are written into nineteen notes, **N310 through N328**,
+all nineteen of which exist as headings in this file. Two of the twenty-six are not among them,
+and both are the refutations: finding 25's acceptance rests on N44, which already carried it,
+and finding 26's residue — a reader who opens P7c and stops there — is carried by nothing in the
+repository until this entry and P7e's reconciliation carry it.
+
+### What a whole-phase view saw that eight per-batch reviews had not
+
+This is the part of the run that justifies its cost, and the repository's own words for it are
+`f9abe48`'s commit message:
+
+> N135's payload dispatch — the descriptor decides, never the caller's value variant — is closed
+> on both backends and was never carried to the web client, which picked its widget off
+> `type.kind` while the flag sat unread beside three names it does read. A landed D20 claim was
+> passing *because* of it: an `<input>` was on screen at every scroll position only because three
+> compound cards rendered fields whose every write was an EINVAL. The photo answer had no fence,
+> so it painted under the next camera's card — M32's fifth element, the one painter every sibling
+> module's repair had skipped. And `g8` and `g9` ran neither the predicate suite nor its
+> self-test, so P8's and P9's own predicates would have closed their phases without ever being
+> proven able to go red.
+
+**Why a per-batch reader could not have found any of the four is one sentence: both halves of each
+were in the tree the whole time, and no batch's diff contains both.** The payload-dispatch defect
+is a rule closed in the backends in an earlier phase and broken in a module a later batch shipped
+— the client batch's diff has the violation and not the rule, and the backend batches' diffs have
+the rule and not the violation. The D20 claim that passed because of that defect is worse than
+that: it is an instrument agreeing with a bug in the code it was written beside, so the batch that
+landed both saw a green rung. The photo fence is a class that had been repaired module by module,
+so each batch's own review saw its own module fixed and had no reason to ask about the fifth. And
+the two missing gate rows are properties of a *row set*, which no diff contains at all: every
+batch added rows and none of them owned the block.
+
+**Twice the first repair was the defect one spelling on**, which is rule 8's whole argument and
+the reason the repair session is itself reviewed. The facade's two predicates were taught to read
+`crate::` and still let `super::` and `use crate::resolve::{self as r}` shrink the population
+silently; reading a module reach now goes through the one home `rust-imports.awk`, which reroots
+before it flattens. The caller-named-file bound refused by `stat` size, so
+`photo diff /dev/zero /dev/zero` was still OOM-killed with no document — the door the bound named
+was not the first door — and it now refuses by what it has read.
+
+### The two refuted findings, reported anyway
+
+**[G9] "The g9 criterion that says 'the workbench is asserted in a browser' passes on a host with
+no node, and unlike its g8 sibling its sentence does not say so."** One half of it is true and the
+verifier reproduced it: `crates/daemon/tests/web_browser.rs:678-684` returns bare when the
+preconditions decline, so the test passes and `phase.sh` records the criterion as met — driven
+with `WCH_E2E_NODE=/nonexistent/node`, the row's own filterset answers `1 test run: 1 passed`,
+exit 0. It is refuted on both of the things that would have made it a finding. The residual is
+already recorded twice as accepted — N44's closing sentence names the Playwright rung by name
+("a counted skip is still not a run"), docs/15 carries it under "Recorded gaps and honest limits
+(v3)" as *Counted is not run*, and AGENTS.md states the same posture as settled. And the new half
+— that the reader is handed a flat sentence at the moment the rung declines — rests on a premise
+the verifier disproved by running it: the decline report prints in full directly under the row's
+headline, naming what was missing and counting all 37 claims and 387 assertions not run, because
+`.config/nextest.toml` gives `binary(web_browser)` `success-output = "final"` and `phase.sh`
+inherits it. What is left is a wording preference about one `what` field.
+
+**[G7] "docs/13's P7c Proves bullet still promises a compile-fail fixture that was deliberately
+not built."** The stale clause is real: docs/13:178-180 still says the arm is a compile-fail
+fixture, the `g7` row at `phase-criteria.tsv:266` says the opposite in as many words, and
+docs/15:169 and the predicate's own header each record the delta. Every load-bearing sentence of
+the finding's own justification, though, is wrong on the tree. The
+finding claimed no dated amendment was written beside the bullet; two were — docs/13:88, the
+execution-record row naming the commit that landed the predicate instead, and docs/13:131-137, a
+dated paragraph at the head of P7 governing every `Proves` bullet in the phase and saying which
+of the two ages runs. `grep -n "compile-fail fixture" docs/13-*.md` returns exactly two hits and
+the finder quoted the second. What survives is a nit the verifier named as a P7e reconciliation
+item: a reader who opens P7c and stops there meets a mechanism the tree rejected, because both
+corrections live elsewhere — one in the execution record's table, one in a dated paragraph at the
+head of the phase — and neither is beside the bullet.
+
+Both refutations are the second stage doing the job Part E gives it, and both were possible only
+because the verifier's default is REFUTED and it re-ran rather than re-read.
+
+### The absence lists — what the review looked for and did not find, and where it looked
+
+Thirty-four claims, counted from the record's own bullets. This is the half a lost record loses
+first: G4's find pass produced a substantial "checked and found sound" list, each item naming
+where it looked, and it was reported and not committed, so only fragments of it survive. These are
+written out one for one rather than merged; where the record is truncated, that is said instead of
+filled in, and where a claim is wrong about the file it names, that is said instead of copied.
+
+**G7, population one — selector vocabulary and the identity/device projection.**
+
+- **A.** *Nothing goes red when `CameraFingerprint` gains a field no side is assigned to.* Where:
+  the entire workspace suite and the entire gate suite, on a tree carrying the seeded field —
+  `cargo nextest run --offline --workspace --no-fail-fast --retries 2` returned `1688 tests run:
+  1688 passed, 39 skipped`, `run-all.sh` returned `gates: PASS — 43 predicates green` with
+  `profile-partition-is-closed` printing `checked 4 partitions`, and the only things that went red
+  were the two artifact-currency gates, until `xtask generate`. This became finding 10 (N323).
+- **B.** *Nothing reconciles `SelectorScheme::example()` with the grammar `parse` accepts.* Where:
+  every test of `crates/schema/src/selector.rs`'s test module — **fourteen of them, not the
+  record's eleven** — of which the two that touch `example()` assert a *message contains* it;
+  `every_prefixed_scheme_is_recognized_by_the_prefix_it_declares` at selector.rs:563, which checks
+  `samples()` against `prefix()` and never `example()`;
+  `scripts/gates/cases/agent-guide-current.cases.sh:95-107`; and the whole workspace, by mutation.
+  This became finding 1 (N320).
+- **C.** *Nothing asserts the `usb_id` a `--json` answer carries is a body `usb:` accepts.* Where:
+  `grep -rn "usb:" --include=*.rs crates/` — every construction goes through `UsbId::Display` or a
+  literal, one (`cli/tests/calibrate.rs:1678`) hand-transcribes `{:04x}:{:04x}`, and none starts
+  from a serialized document; plus docs/12, docs/15 and this file (`grep -n "UsbId|usb_id"`, eight
+  hits, none about the wire shape) — no recorded decision about the `{vendor, product}` object.
+  This became finding 11 (N325).
+- **D.** *Two daemon calibrate tests failed once and are not a finding* —
+  `a_queue_edit_cannot_interleave_with_a_sweep_that_is_rewriting_the_same_session` and
+  `a_session_driven_over_the_wire_is_the_one_the_engine_reads_back`, at
+  `settle_timeout … 5399 ms (11 frames seen)` on one run. **The record's line is truncated
+  mid-path** (it ends at `/var/tmp/w`), so the justification for not reporting them is not
+  recoverable and this entry does not supply one.
+
+**G7, population two — the facade's export list.** The lens states of these: *every absence below
+names the file and the command.*
+
+- *No module-scope `pub` item in `crates/engine/src/facade.rs` other than `struct Facade`.* Where:
+  the product half, lines 1-426 (`#[cfg(test)]` begins at 427, not the record's 436), every line
+  matching `^pub ` — one hit. This is why finding 2 (N315) is a predicate hole rather than a
+  shipped defect.
+- *No `pub fn` on `Facade` narrows its seam's answer except `photo`.* Where: all seventeen bodies
+  at facade.rs:120-425. Two candidate narrowings were checked and killed — `controls` passing
+  `Vec::new()` as `measured`, which matches `daemon/src/server.rs:1779`, `snapshot.rs:157` and
+  `write.rs:166` under N30's rule, and `discover_pairs` returning `DiscoveryReport`, which carries
+  `skipped` and `restored` at `schema/src/report.rs:196-210`.
+- *No Yes-column module in `webcam-handler-imaging` or `webcam-handler-testkit` reaches a
+  No-column module.* Where: `sed 's://.*::' crates/imaging/src/*.rs | grep '^use crate::'` — **the
+  record states this command as returning nothing at all, and at `5496c02` it returns fourteen
+  statements**, in `decode`, `encode`, `exif`, `fixtures`, `photo`, `video` and `y4m`. The claim
+  survives the correction and the evidence for it is the shape of those fourteen: every one
+  reaches another module of the imaging Yes row or reaches `fault`, which is a private `mod` at
+  imaging `lib.rs:52` and so is in no column at all. The same command over
+  `crates/testkit/src/{battery,corpus,fixtures,images}.rs` returns one line,
+  `battery.rs:52`'s `use crate::vocabulary::closed_vocabulary`, and `vocabulary` is a private `mod`
+  at testkit `lib.rs:21` — the identical shape, one crate over.
+- *The imaging Yes row's "no clock and no file" is true.* Where: `std::fs|File::|Instant::now|
+  SystemTime::now|std::time::Instant` grepped over the product half of every
+  `crates/imaging/src/*.rs` — zero hits. The candidate died here.
+- *`crates/cli/src` never calls `Facade::backend()`.* Where: `\.backend()` grepped over
+  `crates/cli/src/main.rs` — zero hits, and the gate counts exactly one `.rs` file under that
+  directory. The escape-hatch-bypass candidate has no instance.
+- *`Facade` really is shareable.* Where: `crates/schema/src/backend.rs:99` declares
+  `pub trait CameraBackend: fmt::Debug + Send + Sync`. The candidate died here.
+- *No implementation note covers findings 1-4.* Where: this file grepped for `unqualified`,
+  `transitiv`, `Yes column` and `stability table`, and N269, N270, N271 and N272 read in full.
+  **The record's line is truncated mid-sentence** at "finding 3 is the different question of a
+  Yes", so the last clause of the justification is not recoverable.
+
+**G8 — the instruments.**
+
+1. *No bound on the bytes a caller-named file contributes before `imaging::compare::read` is
+   reached.* Where: `cli-core/src/lib.rs` (`compare_photographs` 2051, `read_photograph` 2063,
+   `read_profile` 2272); `imaging/src/compare.rs` (`read`, `budget`, `oriented_luma`,
+   `read_netpbm`); `schema/src/limits.rs`, every `MAX_*_BYTES`, of which only
+   `MAX_PHOTO_DECODE_BYTES` at :1265 names `compare::read` as "the one door"; every
+   `scripts/gates/*.sh` for `MAX_PHOTO_DECODE_BYTES` and for "decode budget", no hits; and this
+   file for `read_photograph` and `fs::read`, which returns only N268, about a header's declared
+   raster and never the file's own length. Measured through the shipped binary, both directions.
+   This became finding 14 (N322).
+2. *Nothing reconciles the human `record` table against `RecordReport`'s fields.* Where:
+   `crates/cli-core/` and `crates/cli/` grepped for `gap_events`, `wall_clock_skew`,
+   `sequence_resets` and `clock_reversals` — zero hits outside `crates/schema` and
+   `crates/imaging`; `render.rs`'s `mod tests` (1883 to the file's end at 3260), which has arms
+   for `sweep_adjustment_line`, `ssim_text` and `measurement_text` and none for `record` — nor
+   for `ended_text`, which nothing but `render::record` calls (:1039, defined at :1089), so the
+   helper is as uncovered as the function it serves; and
+   `cli-parity.sh`, which buckets `record` rather than byte-comparing it. The sibling
+   `render::photo` at :788 does cover all nine `PhotoReport` fields. This became finding 15
+   (N326).
+3. *No `Fault` variant drives `sequence_resets` or `clock_reversals` end to end.* Where: the walk
+   over `Fault::ALL`, twelve variants at `backends/fake/src/fault.rs:47` — the only
+   delivery-shaping fault is `FrameGap`. **Deliberately not reported**: `FrameLedger`'s doc at
+   `testkit/src/battery.rs:1490` states the decision (these are measurements, not contract, per
+   D16 and rule 6), and `imaging::stream_stats`'s suite asserts both in both directions.
+4. *No NaN or non-finite value is reachable in the `--json` comparison document.* Where: the
+   shipped binary run on 1×1 and 4×4 Netpbm fixtures — degenerate for a 3×3 Laplacian and an 8×8
+   SSIM window — and the documents read back: `sharpness 0.0`, `ssim 0.8000634808210918` and
+   `1.0`, all finite, valid JSON; `imaging::metrics` guards `is_empty` on every metric and
+   `MIN_LAPLACIAN_EXTENT` on the Laplacian.
+5. *The real camera's verbatim MJPEG bitstream is readable by `photo diff`* — raised as a
+   candidate for "a third docs/11 H1" and measured instead: `photo … --format jpeg` on
+   `/dev/video0`, then `photo diff` against the same camera's PNG, both decoded at 2592×1944 with
+   a measured SSIM. **The record's line is truncated** after a single character, so what the lens
+   concluded beyond the measurement is not recoverable.
+
+**G9 — the operator's workbench.**
+
+1. *No browser claim covers a photo answer arriving after a camera switch.* Where: all
+   thirty-seven titles in `crates/daemon/tests/browser/claims.json`, read; `client.spec.mjs`
+   grepped for `#photo-frame`, `#photo-report` and `#photo-status`, which hits only lines 452-475
+   (the healthy-photo claim) and two prose comments at 1054 and 1566; claim 20 is `recording.js`'s
+   sibling arrival, not this one; and `crates/daemon/tests/web_client.rs`, which cannot see it
+   because it is a two-module composition in a browser. This became finding 5 (N310).
+2. *No check anywhere reads `has_payload` on the client side.* Where:
+   `grep -rn "has_payload" crates/web crates/daemon/tests` returns nothing. The flag is in
+   `desc.flags.known`, and `controls.js` reads that array for exactly three names — `disabled`,
+   `read_only`, `inactive`. This became finding 6 (N312).
+3. *Nothing asserts the vivid panel's content.* Where: `wideCameraId` is used by only two claims,
+   the D20 layout pair at lines 1816 and 1880 (it is bound at line 58, which the record's "only at
+   1816 and 1880" leaves out); the 77-control profile's cards are never inspected.
+4. *No claim puts a `wch_list` on the wire across a socket close.* Where: every assertion in
+   `client.spec.mjs` that expects `#connection` to read "the connection to webcam-handler-daemon
+   closed; reload the URL webcam-handler-daemon printed" — **nine of them, not the record's
+   eleven**, at lines 991, 1033, 1088, 1431, 1589, 1632, 2326, 2644 and 2754, which are the nine
+   the record itself lists; the file carries twelve `#connection` assertions in all. The nearest,
+   at 2630-2645, holds a `wch_calibrate_start` across the close, whose rejection goes to `run()`
+   and not to `#connection`; line 1468 asserts the `listRefused` sentence with a `device_gone` on
+   a live socket. This became finding 7 (N311).
+5. *`session_conflict` is not driven by the browser rung.* **False of the tree it was written
+   about.** `client.spec.mjs` at `5496c02` carries `session_conflict` three times, and one of them
+   is an assertion: claim 31, "an out-of-order click is the daemon's refusal, rendered, and the
+   flow carries on", matches the whole rendered sentence against
+   `/^session_conflict: session conflict: session …/` at line 2380. The claim's own comment says
+   why, and says the opposite of the absence: the plan named `illegal_transition`, *the plan is
+   what changed*, and the row now names the refusal the page can actually produce (N276).
+6. *No claim clicks `#flow-start` twice.* **False of the same file**, in the same claim: claim 31
+   clicks `#flow-start` at line 2344 and again at 2363, which is how it reaches the refusal above.
+   What is true is the narrower sentence underneath it — claim 32, "a double-click on Sweep next
+   is one sweep, and the page says so once", is the manifest's only *re-entrancy* arm and it is
+   about `#flow-sweep` alone, so nothing asserts that one gesture on Start puts one
+   `wch_calibrate_start` on the wire. Finding 17 (N314) stands on the verifier's own
+   reproduction — two starts from one gesture in 28 of 28 unarranged runs — and not on the
+   absence as the record worded it.
+7. *Not reported, because it could not be reproduced*: `app.js::enumerate` at app.js:296 has no
+   fence and two concurrent `wch_list` calls are reachable — two `wch_subscribe_events`
+   notifications fabricated through an interposing proxy, both answers held (ids 7 and 8, released
+   newest-first). The fake's enumeration is static, so both answers are byte-identical and no
+   stale paint can be shown: the arrival is measured, the wrong paint is an argument, and an
+   argument is not a finding.
+8. *Not reported*: the sample grid's `<img>` elements carry no `error` listener, so a
+   `/session-photo` 404 is an invisible tile the operator can still click and have recorded as
+   `chosen_by: human`. **The record's line is truncated** at "I deleted \`p", so the reason this
+   was left unreported is not recoverable.
+
+**Cross-phase, the populations behind the rows.** All eight were established by one exhaustive
+`awk` over all 274 lines of `phase-criteria.tsv` as it then stood, field 3 grouped by field 1,
+cross-checked against `justfile:50-87`; each names what that census showed.
+
+1. *No `g8` row and no `g9` row runs `run-all.sh` or `selftest.sh`.* Where: the table, all rows,
+   and the justfile's gate recipes. The pair appears exactly sixteen times — twice each for
+   `g0`–`g7` — and zero times for `g8` and `g9`. This became finding 18 (N318).
+2. *No `g7` row and no `g8` row runs `./scripts/smoke-hw.sh`.* Where: the same census. The only
+   `smoke-hw` rows are tsv lines 36 (`g1`), 52 (`g2`), 98 (`g3`), 129 (`g4`) and 213 (`g6`). This
+   became finding 19 (N318).
+3. *No `g7`, `g8` or `g9` row runs `schema-artifacts-current.sh`.* Where: the same census; rows
+   exist at `g2`, `g3`, `g4` and `g6` only.
+4. *No `g8` row runs `agent-guide-current.sh`.* Where: the same census; a row at `g6` and `g7`
+   only.
+5. *No `g7` row runs `cli-parity.sh`.* Where: the same census; `g4` and `g6` only.
+6. *No `g9` row runs `systemd-units.sh`.* Where: the same census; `g4` only.
+7. *No `g8` row mentions the `hw_gone_*` recipes or their decline.* Where: the full `what` text of
+   all seventeen `g8` rows, printed and read, and
+   `grep -n "hw_gone\|smoke-hw\|census" scripts/gates/phase-criteria.tsv`, which returns only the
+   `g1`–`g6` smoke-hw rows and the `g8` device-loss row, whose full text is about the hermetic
+   twins and never about the recipes.
+8. *Nothing reconciles a tsv row's prose against its own selection's count.* Where:
+   `counted-selections.sh` read in full — it prints `selects N test(s)` as a `gate_note` and
+   compares it to zero and to the row's regex branches, never to the row's `what` — and `phase.sh`
+   read in full, which prints `what`, runs the selection, and parses no numbers out of `what`.
+   This is the class finding 21 (N318) is one instance of.
+
+Alongside the census this lens ran `counted-selections.sh` to completion (PASS — 164 selections,
+166 branches, 93 command criteria, every note line read) and `ignored-suites-have-recipes.sh` to
+completion (PASS — 39 `#[ignore]`d tests, all matched to a declared `wch-suite` prefix).
+
+**Cross-phase, review the repairs.** Two absences, each with where it looked, under one header
+claim the lens states over its re-run measurements rather than as an absence of its own: *the next
+N-entry whose measurement fails was not found.* Eight of N266–N309 were re-run and
+all eight reproduce — N268's 68-byte `png_declaring(200000,200000)` (exit 26, the decode-budget
+message verbatim); N266's 64×64 eight-bar scene as PNG and P6 (ssim 1.0, every delta 0.0);
+N304's seeded `DAEMON_SHUTDOWN_DRAIN_MS = 21_500` (pre-repair predicate PASS over three items,
+shipped one FAIL with one violation, live tree printing `TimeoutStopSec=45000ms > 42000ms`);
+N291 as corrected by N298 (nineteen bare `#[serde(default)]` in `crates/schema/src/` — session
+8, capture 5, profile 3, video 2, progress 1); N302 (`mutation-scope-is-decided.sh` reporting
+122 product files, 21 in the floor's scope, 101 excluded by a marker, 0 undecided, against a
+`find` of 122 and a `cargo mutants --list` of 1131); N308 (`info /dev/video7` → `camera_unknown`
+exit 13, `info usb:04f2:b83c` → `camera_ambiguous` exit 14 naming both ids); N301's real-backend
+half (the R3 recipe at three attached cameras, PASS, nothing written, no motor moved); and N309
+(the rewritten arm inside the green run, with the `tokio::task::yield_now` row deleted from
+`clippy.toml` turning three `#[expect(clippy::disallowed_methods)]` in `record.rs` into
+unfulfilled expectations).
+
+- *No dangling note citation anywhere.* Where: `grep -rhoE '\bN[0-9]{1,3}\b'` over `crates/`,
+  `scripts/`, `.cargo/`, docs/12-16, `AGENTS.md` and `clippy.toml` — 301 distinct; `grep -oE
+  '^## N[0-9]+' docs/implementation-notes.md` — 308 defined at `5496c02`; `comm -23` empty. The
+  dangling-citation class is closed for these nine commits, across every citing surface the tree
+  has, which is the check a killed agent's half-landed work made worth running.
+- *No second colour model in the browser half.* **The record ends here, mid-`grep`**, so the
+  where-it-looked for this absence is incomplete and this entry does not complete it.
+
+Two further things the record does not hold, said rather than reconstructed. The eight seeded
+mutations this lens ran at workspace scope in its own tree copy — the N267 stamp match,
+`apply_orientation` on read, `budget()`'s ceiling, `refuse_a_verdict_the_sections_do_not_support`,
+`sections()`'s `measured_pairs`, `luma_sample`'s weights, the skew subtraction, the fake's
+per-node arrival, both fake `CameraUnknown` doors — are named, with a baseline of `1688 tests run:
+1688 passed, 39 skipped` in 86.7 s in that copy, and **their individual outcomes are not stated**.
+And every `--- <lens>` header line in the record is truncated at roughly 200 characters, so each
+lens's brief survives only as its first sentence.
+
+### What the review did not find, which matters as much
+
+E4, E6 and docs/11 §7 each carry this section and it is why they are still readable: a review
+that lists only its hits is unfalsifiable about its coverage. Scoped honestly — **this
+review had six lenses, not G6's twenty-two.** There was no unsafe lens, no privacy-and-security
+lens, no concurrency lens and no performance lens; those populations were walked at G6 and were
+not re-walked here, so this entry claims nothing about them.
+
+Inside what it did walk:
+
+- **No dead button in the shipped web client.** Every button and writing widget in the union of
+  `index.html`'s id table and every `addEventListener("click"/"change")` and `on*` attribute
+  across the ten modules of `crates/web/assets` was clicked against a live daemon and its wire
+  frame recorded. The exception is two dead *widgets*, which is finding 6 (N312) and is a
+  different claim.
+- **No RPC the page issues that the wire surface does not declare, and one it issues *because*
+  the surface does not declare it.** Fourteen distinct methods and two subscriptions were
+  extracted from the assets by grep and reconciled against the twenty-two methods and two
+  subscriptions the `wire_surface!` declaration generates. Thirteen of the fourteen exist there
+  and every param set matches the trait signature. The fourteenth is `wch_ping`, which the record
+  counts and does not name: it is `rpc.js`'s heartbeat, and it is unregistered on purpose — a
+  question no device can slow down, answered `-32601` without a handler running, so silence in
+  reply to it is a fact about the socket rather than about a camera (note **N157**,
+  `rpc.js:126`).
+- **No `switch` over device or wire vocabulary without a payload-carrying default arm** — all
+  twelve of them, one per `default:` in the six modules that carry a `switch` at all (the record
+  says eleven), across roughly 170 `<wire-identifier>.<prop>` accesses extracted by script and
+  checked against the schema types, including the two enums whose discriminant is not `kind`
+  (`ControlStatus` is `status`, `NegotiatedAdjustment` is `field`) and every
+  `skip_serializing_if`. Rule 6 held on the client side.
+- **No non-finite number in the `--json` comparison document**, measured at the degenerate sizes
+  rather than argued.
+- **No `use crate::` from a Yes-column module into a No-column module in imaging or testkit**, and
+  no module-scope public item in `facade.rs` beyond `struct Facade`: D18's encapsulation is true
+  of the tree, and the two findings against it are about the predicates that were supposed to hold
+  it, not about the composition.
+- **No dangling note citation in the tree**, 301 cited against 308 defined at `5496c02`.
+- **No N-entry whose recorded measurement has stopped reproducing**, across the eight that were
+  re-run.
+- **No `/preview` or `/session-photo` response outside what D20 describes**: three `/preview`
+  (two 503s for the MJPEG-less vivid camera, rendered as "format MJPG is unavailable; YUYV, NV12,
+  GREY would be accepted", one 200 for the chicony) and eight `/session-photo`, all 200 — four
+  from the sweep-time pane as each `sample_taken` landed and four from the grid.
+
+The shape of what it *did* find sits where G6's did not. Three of G6's four HIGH findings were
+defects in product code and the fourth, H3, was a gate predicate counting files where its own
+header claimed call sites — one in four. Of the nine confirmed here, four are defects in **the
+gate predicates themselves** — findings 2, 3, 4 and 8 (N315, N316, N315 and N317), the
+instruments — and three of the
+remaining five are in the web client, the one half of this tree whose contract is a browser's
+behaviour rather than a type. That is what
+a gate-close review over three phases of instrument-building should be expected to find, and it is
+why `g8` and `g9` running neither `run-all.sh` nor `selftest.sh` is the most expensive item on the
+list: it is the one finding that would have let every other instrument close a phase unproven.
+
+## E23 — The three gate closes at four cameras, the fourth absent since E18, 2026-08-21
+
+AGENTS.md's "Done means" asks a phase-closing change for "hardware evidence recorded in the
+notes with transcripts", and three phases close together — docs/13's P7e, P8d and P9d, each of
+which names its close as rows counted, review, fixes, evidence and reconciliation. E19, E20 and
+E21 are the shape: a dated run against something this project does not control, recorded once,
+its transcript never edited afterwards — E21's amendment corrects the prose beside a block it
+leaves untouched, which is the same rule read from the other side.
+
+**What makes this run worth an entry rather than a line is the fourth camera.** The Dell
+U3224KB/A 4K Webcam was on the bus for E18 (2026-08-17) and off it for all three of those runs.
+E21 prints what that cost, and E20 says the same thing in prose:
+
+```
+SKIP (partial): 3 committed profile(s) match no camera attached to this host, so this arm did
+not check them against a device: dell-u3224kb, logitech-brio, vivid
+```
+
+Design v3 was adopted the day after E18 (commit `796babb`, 2026-08-18), so the whole of the
+D14–D20 work falls inside that window: the selector's spellings, the identity/description
+partition, the stream stats, the facade, the device-loss recipes and the web client were written,
+reviewed and repaired while one of the six committed profiles was being compared against nothing.
+This is the run that plugs it back in.
+
+### The fixture
+
+**Host:** `pwnblet`, Ubuntu 26.04 LTS, kernel `7.0.0-30-generic` (x86_64), on the tree at
+`f9abe48`.
+
+**The tree is anchored by a count that reconciles three ways.** `just ci` at `f9abe48` reported
+`1704 tests run: 1704 passed, 39 skipped`; the R3 rung below reports `30 tests run` with `1713
+tests skipped`; the R2 rung reports `9 tests run` with `1734 tests skipped`. All three sum to
+1743, so the two hardware rungs and the CI baseline saw one workspace, and the sum is what says
+so. **That workspace is `f9abe48`'s, and it is not the tree this entry commits in**: the batch
+these three gate closes land in adds two tests, so the committing tree runs 1745 — the 1706
+`cargo nextest list --workspace` names and the same 39 it skips — and a reader who checks the sum
+against the tree in front of them is two out unless the sentence says which tree it anchors.
+E21's own amendment is the reason this paragraph exists: that entry's transcript carried a
+summary line from a tree three tests behind the one that committed, and nothing in the entry
+could have caught it.
+
+**Attached: four logical cameras**, ten `/dev/video*` nodes, all `uvcvideo` — the same four E18
+met. Controls and bus paths as the run printed them:
+
+| camera | bus path | controls | stream negotiated by the R3 stream arm |
+|---|---|---|---|
+| Chicony RGB (`Integrated Camera: Integrated C`) | `3-4:1.0` | 18 | MJPG 2592x1944 at 30 fps |
+| Chicony IR (`Integrated Camera: Integrated I`) | `3-4:1.2` | 3 | GREY 640x360 at 15 fps |
+| OBSBOT Tiny 3 | `3-1:1.0` | 24 | MJPG 3840x2160 at 30 fps |
+| Dell U3224KB/A 4K Webcam | `2-3.4.1.1:1.0` | 19 | MJPG 3840x2160 at 25 fps |
+
+The four control counts sum to 64, and
+`hw_describing_one_control_says_what_the_whole_walk_says_about_it` answered
+**"64 control(s) compared across 4 camera(s)"** in the same run — two arms counting the same
+population from two directions, which is the only reason either number is worth printing.
+
+**Oracles:** `ffprobe` `8.0.1-3ubuntu2` and `mpv` `v0.41.0`, the pair E17 and E18 recorded, so
+N119 still applies and `mpv` still corroborates playability rather than a demux.
+
+### 1. R3 — `just smoke-hw`, 30 of 30 tests run, 30 passed, 96 s
+
+Motors were **included** — the 2026-08-08 ruling's default, and no person is in front of these
+lenses — so `WCH_NO_MOTION` was not set and nothing was excluded by it. The rung says which it
+is on its first line rather than leaving it to be inferred:
+
+```
+smoke-hw: motor-moving suites (hw_motion_*) are included — set WCH_NO_MOTION=1 to exclude them
+smoke-hw: 10 capture node(s) present; running test(/(^|::)hw_/)
+     Summary [  96.382s] 30 tests run: 30 passed, 1713 skipped
+smoke-hw: 28 claim(s) declined by tests that ran — each named above
+smoke-hw: 30 of 30 selected test(s) ran — the suite is complete
+smoke-hw: suite run, 0 named skip(s) before it started
+```
+
+**Twenty-eight declined claims, every one named**, and the census is the honest half of a green
+line. Five of the twenty-eight are the `hw_gone_*` recipes, which is the whole of D19's hardware
+half declining by name on a host that cannot arrange a mid-stream loss:
+
+```
+SKIP: needs an arrangeable mid-stream device loss; set WCH_DEVICE_LOSS to a command that makes
+the camera under test vanish while a stream is open (design D19 — the partner rig detaches a
+vhci port; this host's privileged helper refuses to unload uvcvideo under an open node, by
+design)
+```
+
+P8c names the decline as the testable half on this rig, and the decline is the thing under test:
+the skip states the variable that would make the recipe run and the reason this host cannot set
+it, and that reason is a safety property of `webcam-handler-priv` — it refuses to unload
+`uvcvideo` under an open node — rather than an absence. E20 recorded two such recipes; there are
+five now, one per D19 clause.
+
+The remaining twenty-three break down as twelve PF:24 automation partials — two controls on the
+Chicony RGB, three on the OBSBOT, three on the Dell, one line per arm that restores — seven
+declines by the Chicony IR, which has three controls and neither a safely perturbable one nor an
+enabled boolean automation among them, one by the Chicony RGB for having no writable pan/tilt,
+and three repetitions of the two committed profiles that match no camera here.
+
+**The fourth camera answers the same sentences the other three do.** Every arm that walks all
+attached cameras walked it, and it answered each of them at the device:
+
+```
+cam:dell-u3224kb-a-4k-webcam: D5 live — WCHX refused with "format WCHX is unavailable; NV12,
+YUYV, MJPG would be accepted", NV12 negotiated at 1920x1080
+cam:dell-u3224kb-a-4k-webcam: D5 live — 641x481 negotiated to 640x480, reported as [Size {
+requested_width: 641, requested_height: 481, negotiated_width: 640, negotiated_height: 480 }]
+cam:dell-u3224kb-a-4k-webcam: PF:6 live — brightness took 255 for a write of 1255, warnings
+[Clamped { requested: 1255, applied: 255, range: ControlRange { min: 0, max: 255, step: 1 } }]
+cam:dell-u3224kb-a-4k-webcam: PF:3 live — switching white_balance_automatic off freed
+white_balance_temperature
+cam:dell-u3224kb-a-4k-webcam: MJPG 3840x2160 → 962545 bytes, the camera's own bytes [E6]
+cam:dell-u3224kb-a-4k-webcam: moved pan_absolute through [-7200, -3600, 0, 3600, 7200] — 5
+sample(s), 14400 units of travel (4 step(s)), and back to 0
+```
+
+**PF:19 is confirmed live again, and only this camera can confirm it**:
+
+```
+PF:19 confirmed live: cam:dell-u3224kb-a-4k-webcam (2 capture node(s): /dev/video6 /dev/video8,
+streaming /dev/video6) — one camera, several streamable nodes, and the first is the one the tool
+drives
+```
+
+E20 listed PF:19's counter-example among its declines because no attached camera exhibited it,
+and it can only be measured while this device is on the bus. The arm prints which node it drove
+rather than asserting that the choice does not matter, which is what makes the finding usable
+by a reader who has a different multi-node camera.
+
+### 2. What the fourth camera changed, and the two profiles it did not reach
+
+**The committed profile is checked against the device it was captured from.** The arm walks all
+six profiles in `corpus/profiles/` and names the ones it could not reach:
+
+```
+chicony-rgb: enumeration matches the committed profile
+chicony-ir: enumeration matches the committed profile
+obsbot-tiny3: enumeration matches the committed profile; its node paths were reassigned by the
+kernel and are not identity [PF:22]: /dev/video8 → /dev/video4, /dev/video9 → /dev/video5
+dell-u3224kb: enumeration matches the committed profile
+1 of 4 matched camera(s) sit at different /dev/videoN paths than when their profile was
+captured, and none of them changed
+SKIP (partial): 2 committed profile(s) match no camera attached to this host, so this arm did
+not check them against a device: logitech-brio, vivid
+```
+
+**The OBSBOT's line is D15's partition being exercised rather than argued.** The OBSBOT's profile
+was captured at `/dev/video8` and `/dev/video9`; the device is at `/dev/video4` and `/dev/video5`
+today, and the minors it vacated are the Dell's — this run's own PF:19 line above names
+`/dev/video8` as the Dell's second capture node. Why the numbers moved is a question this rig
+cannot answer. The fourth camera's arrival correlates: E19 met the OBSBOT at `/dev/video0` and
+`/dev/video1` with the Dell absent, and E18 and this run both meet it at `/dev/video4` and
+`/dev/video5` with the Dell present. So does probe order, which on a host whose four devices come
+up the same way every boot moves with the arrival rather than apart from it, and nothing here
+separates the two. Nothing has to: that is what PF:22 calls bookkeeping. The profile still matched, and the arm says both halves of why in one sentence: the
+paths moved, and *none of them changed* — the node path is an address the profile carries as
+description, and the fingerprint is what the match runs on. A run at three cameras cannot produce
+that fact on purpose; adding a device to the bus produces it for free, and \[PF:22\] is the entry
+that predicted it.
+
+**The selector answers twenty-five spellings at four cameras:**
+
+```
+4 camera(s): 21 spelling(s) resolved uniquely, 4 answered ambiguously naming their own camera
+usb:04f2:b83c: 2 logical cameras, named
+```
+
+**Twenty-one unique and four ambiguous**, and the finding is that the ambiguous count did not
+move. E19 recorded four ambiguous spellings at three cameras — the Chicony pair's shared
+`usb:04f2:b83c` and shared `serial:0001`, each asked once per half — and a fourth camera arrived
+without adding a fifth. That is the negative result D14's grammar is built to make available:
+every spelling the new device contributed resolves to it alone, so the collision that exists is
+a property of two halves of one USB device rather than of a crowded bus. The pair is still
+separable by `bus:`, which the twin arm re-states by naming both candidates.
+
+**Two profiles stay declared rather than measured**, and the reason differs between them. The
+Logitech BRIO has not been on this bus since E15 and nothing here is evidence about it. `vivid`
+is stranger: its device *existed on this machine on this day* — section 4 enumerated it — but
+`hw_enumeration_matches_the_committed_profile` is an R3 arm and R3 runs against whatever is
+attached, while `vivid` is loaded and unloaded by R2 around its own suite. The two rungs never
+overlap, so `corpus/profiles/vivid.json` has never been compared against the driver it was
+captured from. The arm names it among the profiles it looked for, which is the only reason this
+gap is visible at all.
+
+### 3. D16's stream stats at four cameras, and the fourth set is not like the other three
+
+One second from each camera, every file read back by both oracles, every interval
+`IntervalSource::Measured`. The recording arm's output whole, with only libtest's per-test
+framing removed:
+
+```
+SKIP (partial): 2 committed profile(s) match no camera attached to this host, so this arm did not check them against a device: logitech-brio, vivid
+cam:integrated-camera-integrated-c: avi 2592x1944 — 27 frame(s), 5543984 bytes, declared 37539 us/frame (Measured); file duration 1013 ms, driver span 976 ms, engine wall clock 1012 ms, this test measured 1056 ms; declared-vs-wall +1/-0 ms against a 37 ms frame period; 1 dropped, ended Duration
+cam:integrated-camera-integrated-c: D16 stats — 27 delivered, 1 dropped in 1 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 26 observed / 26 retained, mean 37539 us, min 31984 us, max 144022 us, p50 32003 us, p99 144022 us, jitter 8190 us; wall-clock skew 35982 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpWNT7qy/take-3-4-1-0 checked by ffprobe and mpv
+cam:integrated-camera-integrated-i: y4m 640x360 — 15 frame(s), 3456139 bytes, declared 73429 us/frame (Measured); file duration 1101 ms, driver span 1028 ms, engine wall clock 1065 ms, this test measured 1106 ms; declared-vs-wall +36/-0 ms against a 73 ms frame period; 1 dropped, ended Duration
+cam:integrated-camera-integrated-i: D16 stats — 15 delivered, 1 dropped in 1 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 14 observed / 14 retained, mean 73429 us, min 64000 us, max 148007 us, p50 68000 us, p99 148007 us, jitter 10653 us; wall-clock skew 36990 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpWNT7qy/take-3-4-1-2 checked by ffprobe and mpv
+cam:obsbot-tiny-3-obsbot-tiny-3-st: avi 3840x2160 — 21 frame(s), 8066906 bytes, declared 33795 us/frame (Measured); file duration 709 ms, driver span 675 ms, engine wall clock 1008 ms, this test measured 1109 ms; declared-vs-wall +0/-299 ms against a 33 ms frame period; 0 dropped, ended Duration
+cam:obsbot-tiny-3-obsbot-tiny-3-st: D16 stats — 21 delivered, 0 dropped in 0 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 20 observed / 20 retained, mean 33795 us, min 30753 us, max 45059 us, p50 33356 us, p99 45059 us, jitter 1177 us; wall-clock skew 332087 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpWNT7qy/take-3-1-1-0 checked by ffprobe and mpv
+cam:dell-u3224kb-a-4k-webcam: avi 3840x2160 — 10 frame(s), 9835464 bytes, declared 84443 us/frame (Measured); file duration 844 ms, driver span 759 ms, engine wall clock 1028 ms, this test measured 2382 ms; declared-vs-wall +0/-184 ms against a 84 ms frame period; 0 dropped, ended Duration
+cam:dell-u3224kb-a-4k-webcam: D16 stats — 10 delivered, 0 dropped in 0 gap event(s), 0 sequence reset(s), 0 clock reversal(s); intervals 9 observed / 9 retained, mean 84443 us, min 39979 us, max 439996 us, p50 40000 us, p99 439996 us, jitter 79011 us; wall-clock skew 268009 us
+oracles: 4 container claim(s) about /home/pwnall/workspace/webcam-handler/target/wch-scratch/.tmpWNT7qy/take-2-3-4-1-1-1-0 checked by ffprobe and mpv
+```
+
+**Everything E21 measured reproduces.** Both Chicony halves drop exactly one frame in exactly one
+gap event, each with the single stretched interval that tells one loss from a run of them (144022
+us against a 37539 mean; 148007 against 73429); the OBSBOT loses nothing across 21 frames of
+3840x2160 and its jitter is 1177 us against their 8190 and 10653; no driver reset a sequence and
+no clock ran backwards on any camera. That is three runs in a row for the drops and the ratio.
+The byte counts differ because the scene does — nothing in this rung is about pixel content.
+
+**The Dell's numbers are the ones this entry exists for, and they say something the other three
+cannot.** Zero dropped frames, zero gap events — and a `p99` of 439996 us against a `p50` of
+40000, eleven times the median, with a jitter of 79011 us that is sixty-seven times the OBSBOT's.
+Read those together and the reading is unambiguous: **every frame the driver numbered arrived,
+and one of them arrived 440 ms after the frame before it.** Drops come from the sequence counter
+and intervals come from the timestamps, and `Accumulator::push` keeps them apart on purpose; a
+rig that inferred loss from a long interval would have reported this stream as broken, and a rig
+that inferred health from `frames_dropped == 0` would have reported it as clean. Neither is what
+happened.
+
+The nine intervals resolve arithmetically out of the printed figures and nothing else. Nine of
+them at the printed mean is `9 × 84443 = 759987` us, which is the printed driver span of 759 ms
+at the millisecond it is printed to; take the maximum out and `759987 − 439996 = 319991` us is
+left across eight intervals, an average of 39999 us each — within 20 us of the printed `min` of
+39979 and within 1 us of the printed `p50` of 40000. So the stream is **eight intervals at 40 ms
+and one at 440 ms**, 40000 us being 25 fps to the microsecond and 25 fps being what the stream
+arm negotiated from this camera in the same run. The jitter follows from that shape and confirms
+it, being a mean absolute deviation: `(8 × 44444 + 355553) / 9 = 79011` us, the figure the arm
+printed. **The mean interval is not a rate this camera ever ran at.**
+
+**That is the argument for D16 existing, made by a device rather than by a design document.** An
+AVI header carries one frame period for the whole file, so the muxer has no choice but the mean,
+and `declared 84443 us/frame` is the honest answer to the only question the container can ask:
+ten frames at 84443 us is 844 ms, which is the file duration, which is the driver's 759 ms span
+plus the one frame period N120 says a constant-rate file always declares beyond it. The container
+is right about the whole and silent about the parts. N120's two-sided bound holds on it
+(`declared-vs-wall +0/-184 ms` against the arm's `MAX_WALL_CLOCK_OVERHANG_MS` of 640), both
+oracles accepted all four container claims, and nothing in the file records that eight of its
+nine intervals were 40 ms. `StreamStats` is the only place that survives, and the consumer this
+tool is built for — an agent validating an animation frame by frame — is the consumer for whom
+the difference between 40 ms and 84 ms is the answer rather than the metadata.
+
+**The Dell is slow at everything, consistently, and this is evidence rather than a diagnosis.**
+The recording arm measured 2382 ms of its own wall clock around a 1028 ms take, and inside that
+take the `engine wall clock` is 1028 ms against a `driver span` of 759 ms; the sweep over the
+socket delivered five samples from it in 12.21 s where the Chicony RGB took 3.18 s and the OBSBOT
+4.41 s. Nothing here separates a slow sensor from a slow link from a deep buffer, and this rig
+cannot: the bus path is `2-3.4.1.1:1.0` against the others' `3-1:1.0` and `3-4:1.x`, a different
+root and three hub hops further out. What is recorded is the ordering, and it is the same
+ordering in two arms that time different things.
+
+**And E21's amendment is corrected here rather than edited**, which is the rule that entry states
+about its own transcript. That amendment recorded six readings of the two Chicony halves'
+wall-clock skew, concluded that they "land within 55 us of each other on every run" and that both
+"stay inside a 100 us band around 35.95 ms", and retired two phrasings of its own on the strength
+of them — "to the microsecond", which is the tightest of six samples rather than a property, and
+"a fixed per-camera startup cost" for an OBSBOT skew that moves over a ±3% band. This is the
+seventh reading: **35982 us and 36990 us, 1008 us apart**, eighteen times the widest of the six,
+with the IR half a full millisecond outside the band. The closeness is an ordering and not a
+bound. Two things differ between that rig and this one — a fourth camera on the bus, and five
+commits of tree — and this run separates neither, so it identifies nothing; it only shows that
+six samples were not enough to say "on every run", which is the same lesson the amendment was
+written to record and did not apply far enough. What does hold across all seven is the ordering
+the amendment called the part worth carrying: the two Chicony halves together, and the 4K MJPG
+devices seven to nine times above them — 332087 us on the OBSBOT and 268009 us on the Dell
+against the pair's 35982 and 36990.
+
+**Two of `StreamStats`' five counters are still untested by this rig.** `sequence_resets` and
+`clock_reversals` are zero on all four cameras, as they were on all three of E21's, and zero from
+a rig that cannot restart a driver's sequence mid-take is an absence of evidence. Design D19's
+`declared`-until-measured reading applies unchanged.
+
+### 4. R2 — `just rung-vivid-managed`, 9 of 9 tests run, 9 passed, 0 named skips
+
+Loaded and unloaded through the blessed helper; no `modprobe` ran by hand.
+
+```
+vivid: loaded (1 instance(s)); 4 node(s) appeared: video10, video11, video12, video13
+     Summary [   9.773s] 9 tests run: 9 passed, 1734 skipped
+cam:vivid: 4 node(s), bus_path vivid.0
+cam:vivid: 77 control(s) enumerated
+cam:vivid: 83 format(s), 747 size entr(ies)
+10 compound payload(s) read
+8 control write(s) went out and read back through the driver
+1 node(s) refused a second concurrent stream as Busy
+cam:vivid: probe measured 1 pair(s), declined 0, restore complete: true
+cam:vivid: recorded YUYV 3840x2160 to Y4M — 4 frame(s), 66355274 bytes, declared 202001
+us/frame (Measured)
+rung-vivid: suite run, 0 named skip(s) before it started
+vivid: unloaded; 4 node(s) went away: video10, video11, video12, video13
+```
+
+**What this rung bought that four attached cameras could not.** Seventy-seven controls against
+the attached set's 18, 3, 24 and 19 — more than the four real devices hold between them, and the
+population the enumeration walk, the control-model invariants and the snapshot's refusal rule are
+sized against. Eighty-three formats and 747 size entries against attached trees of two, one, two
+and three formats, in the table's order. Ten compound payloads read in one arm, where the only
+compound control this run saw on an attached camera is `region_of_interest_rectangle`, on the two
+Chicony halves. R3 reaches none of it, and that difference is why the rung is a standing
+requirement after touching enumeration, the control walk, the format tree, writes or streaming
+rather than a convenience.
+
+**One line in that transcript looks like a rule 8 violation and is not:**
+
+```
+brightness: swept 3 value(s); recovery complete: false; could not put back: ["u8_pixel_array"]
+```
+
+`u8_pixel_array` reshapes with the negotiated format \[PF:17\], so the value read before the
+sweep no longer fits the control after it, and the restore says so instead of writing something
+the driver would reject or silently truncate. The arm asserts the return of the *control it
+swept*, not the completeness of the whole report, for exactly this reason — a `false` here is the
+report being honest about a device that changed shape underneath it, and rule 6 is what makes
+that representable. It is also the only such control in a population of 77.
+
+**And N195's clause is still waiting.** `lifecycle::arm_pre_snapshot` refuses a camera carrying
+a writable control it cannot record, and `vivid_a_calibration_sweep_sets_settles_captures_and_
+scores_through_the_real_ioctl_path` drove it over that device and passed, so no writable control
+among its 77 declines its read. E18 recorded that negative result and it reproduces; the
+"Retires when" clause on N195 — a device that declines a control read *permanently* — has still
+not met its first instance, and this entry says nothing about devices this host has not met.
+
+### 5. The hotplug arm, and a number that is deliberately not asserted
+
+The `uvcvideo` cycle ran with four cameras on the bus for the first time since E18:
+
+```
+before: 4 camera(s) on 10 node(s): 2-3.4.1.1:1.0, 3-1:1.0, 3-4:1.0, 3-4:1.2
+cycle: uvcvideo: cycled; 10 node(s) before, 10 after
+cam:dell-u3224kb-a-4k-webcam: 17 control(s) recorded, none of them changed by the cycle
+cycle seen through watch: 8 removal(s), 8 arrival(s) — /dev/video2 then /dev/video2
+after: 4 camera(s) back on the same 4 bus path(s)
+```
+
+**Eight events against ten nodes is not a lost pair.** The debounce coalesces a burst and the
+*turn* — the first arrival after a run of removals — ends the reading (note **N53**), so the
+count is taken while the driver is still re-registering; the arm's own comment names it ("Shapes,
+never counts") and asserts the ordering and the provenance instead. The two the reading never
+names are `/dev/video0` and `/dev/video1` — every event it does report, eight removals and eight
+arrivals, runs from `/dev/video2` to `/dev/video9` — and which two they are is a coincidence of
+that instant rather than a property of those nodes. What it does assert held at four cameras:
+something that was here left, something arrived after it, every removed path was one this arm had
+seen before the cycle, and all four cameras came back on the same four bus paths with no control
+changed. \[PF:25\]'s hazard applies as it always does, in the shape that entry's own amendment
+left it: what a cycle moves on the OBSBOT is the *reading* on the axis with a motor, and
+photographed against a calibrated metric the aim does not move — so a snapshot taken after the
+cycle would record a position nobody commanded \[PF:28\], and the snapshot this arm restores from
+is the one it took before (note **N86**).
+
+### 6. What this run does not establish
+
+**No firmware is dated.** `CameraFingerprint` does not carry `bcdDevice`, so every claim here is
+against whatever firmware these four devices held on 2026-08-21 and cannot be tied to a revision.
+
+**The Logitech BRIO is still untouched**, and `corpus/profiles/vivid.json` has still never been
+compared against the driver it was captured from — section 2 says why, and neither is a
+side-effect of this run being short.
+
+**D19 is proved only in its declining half here.** Five recipes exist, are recipe-named, and
+decline for a stated reason; not one clause of the contract has been driven at real hardware on
+this host, and the partner rig that detaches a `vhci` port is where that evidence has to come
+from (note **N299**'s contributed-evidence protocol).
+
+**Nothing about the Dell's slowness is explained**, only measured, and the readings that show it
+come from one desk on one day.
+
+**The numbers above bound nothing, and two of the three orderings under them are not device
+evidence.** The recording arm asserts `frames_delivered == frames_written`,
+`summary.dropped_frames == stats.frames_dropped` and
+`intervals.observed + clock_reversals + 1 == frames_delivered`; the first two are two readings of
+one accumulator and go red on a build that grows a second home for the arithmetic, not on a
+camera that misbehaves, and the arm's own comment says so (note **N298**). The third is the one
+these four cameras answered. Nothing in the rung thresholds jitter, drops, skew or a percentile,
+because deciding what "healthy" means belongs to the consumer — D16's own last bullet — and a
+device that delivered every frame it numbered while taking 440 ms over one of them is the case
+that makes the bullet worth keeping.
+
+
+## N345 — `thirty` was a word this gate read as no number at all, and `thirty-one` was a count it held
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/counted-selections.sh`'s `cardinal()`, and
+`scripts/gates/cases/counted-selections.cases.sh`'s
+`fail_case_a_count_written_as_a_bare_multiple_of_ten_is_still_a_count`. **Class:** a rule stated as
+a class and implemented as a spelling (**N249**, rubric A17) — the third round of it on this one
+predicate, found by the final adversarial reading of the batch that landed the other two.
+
+Note **N339** made a count of tests in a criterion row a claim this suite reconciles, and note
+**N340** is the reading that found its word reader keeping a comma at both ends of every word. This
+is the same predicate's third hole and it is in the same half of it. `cardinal()` looked a bare
+word up in `unit`, which runs `one` to `twenty`, and consulted the `ten` table only for a
+hyphenated `[a-z]+-[a-z]+` compound. So `thirty-one tests` was a claim this gate held against the
+number it had just measured, and `thirty tests` was a phrase it read as no number at all.
+
+**Driven before it was repaired, against the shipped reader.** `thirty`, `forty`, `fifty`, `sixty`,
+`seventy`, `eighty` and `ninety` — seven of the eight words in the `ten` table — returned nothing
+when they qualified `tests`, while `twenty tests` answered 20 and `thirty-one tests` answered 31.
+`twenty` worked only because it is also the last entry of the units list. The predicate's own header
+claimed the opposite in as many words: *"The lexicon of number words runs from `one` to
+`ninety-nine`, hyphenated compounds included."* A limit stated in a header is the shape this
+repository accepts in place of a gate (**N222**); a limit stated in a header that is not the limit
+the code has is the shape it does not.
+
+**It is the silent direction, which is why it is repaired rather than recorded.** The other
+residual this reader drove — a thousands group written with a space, `1 381 tests`, read as its
+last group and refused as `381` — errs out loud, naming a sentence whose author can respell the
+number, and is named in the limits paragraph as exactly that. A count nobody reads is a claim
+nobody checks, and it fails in the direction where the summary says `checked 0 count(s)` about the
+row that carries it.
+
+The repair is one line, `if (x in ten) return ten[x]`, after the `unit` lookup so the shared
+`twenty` does not depend on the order. The arm seeds a row whose prose reads *the forty tests this
+row selects, one for every control the walk reaches* against a stub lister answering one matched
+test, and goes red on *its criterion says 'forty tests'*. **Watched red-on-inverse first**: before
+the repair that arm exited 0 with the gate green and the summary printing `checked 0 count(s)` —
+the miss itself, as the arm's pass condition.
+
+Applying the repair added no count claim to the shipped table: it still carries seven, so no row
+was silently making a bare-ten claim while nobody was reading it. That is the fortunate half and it
+is not the finding — the finding is that nothing would have said so.
+
+**Retires when:** the word lexicon is derived from something rather than transcribed, which would
+take a number parser this suite has no other use for.
+
+
+## N346 — The browser rung's third claim to fail on a wall-clock budget inside the contended workspace run
+
+**Date:** 2026-08-21. **Subject:** `crates/daemon/tests/browser/client.spec.mjs`, *a photo refused
+for a camera nobody is looking at writes nothing under the next one*. **Class:** a claim whose
+budget is wall clock, in a rung that runs concurrently with seventeen hundred other tests on eight
+cores — note **N332**'s second half, met a third time and on a third claim.
+
+The claim failed once during the gate closes, inside `just ci`: `#photo-status` was still empty
+after twenty-four polls over the ten seconds Playwright allows, where the D13 sentence
+`busy: /dev/video0 is busy: this process is already streaming it` was expected. **No product code
+on that path moved in the batch it failed in** — `crates/web/` is untouched by it and every
+`crates/daemon/src/preview.rs` edit is inside that file's `#[cfg(test)]` module — and the claim
+uses an interposed wire, so the refusal it waits for is fabricated by the test rather than computed
+by a daemon. What it waits on is a round trip through the interposer and a paint, and what it
+spends is ten seconds of a saturated machine.
+
+**Measured rather than argued, on one tree.** Six `--workspace` runs across the close: five green
+at `1706 passed, 39 skipped` and one red on this claim alone. The same rung standalone is green in
+the same window — `just gate-g9`'s own row ran it at **44 claims and 461 assertions in 24.3 s**,
+against **41.9 s** for the run that failed, which is the contention stated as a number. That is the
+shape N332 recorded at two-in-five on two other claims, and the ratio here is not offered as a
+better estimate of the rate: it is one more sample of a thing nobody has attributed.
+
+**What the three have in common, which is the finding this note adds.** N332's first was a real
+test defect and was repaired — an exact count of asynchronously arriving frames taken at an
+unfenced instant. The second and this one are not that: each waits for an element to reach a
+sentence and gives up on a timer. Neither asserts anything false and neither has a fence missing;
+they run out of budget. So the class N332 left open is narrower than it looked — **not "the browser
+rung is flaky" but "two of its claims spend a fixed wall-clock budget in a run whose scheduling
+this rung does not control"** — and it is the scheduling, not the assertions, that the next session
+should look at first. `.config/nextest.toml` already serialises the hardware suites in a one-thread
+`exclusive-device` group for a related reason; the browser rung drives a real Chromium and a real
+daemon and is in no group at all.
+
+**What would settle it, priced honestly.** The rate is around one in six, so a repair cannot be
+shown to work by running the suite a few times: thirty runs a side is the order, an hour and a half
+of machine time, and that is the measurement rather than the fix. Recorded here so the next
+session starts from a number and a named suspect instead of from a symptom, which is what this note
+is for.
+
+**Retires when:** the rung is given a scheduling posture and measured either side of it, or a
+mechanism is found that makes the budget unnecessary.

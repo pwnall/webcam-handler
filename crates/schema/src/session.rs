@@ -92,12 +92,12 @@ const _: () = assert!(limits::MAX_SWEEP_SAMPLES == 256);
 const _: () = assert!(limits::MAX_MOTION_SWEEP_SAMPLES == 32);
 
 closed_vocabulary! {
-    /// Which of [`SweepAdjustment`]'s four shapes a value has, without its payload.
+    /// Which of [`SweepAdjustment`]'s shapes a value has, without its payload.
     ///
     /// The discriminant on its own, so a completeness check has something the compiler owns
     /// to walk: [`SweepAdjustment`] carries struct variants and `closed_vocabulary!` cannot
-    /// generate an `ALL` for those, while a hand-written array of four examples is exactly
-    /// the hand list rubric rule 6 bans. A fifth adjustment forces a fifth member here
+    /// generate an `ALL` for those, while a hand-written array of one example per variant is
+    /// exactly the hand list rubric rule 6 bans. A new adjustment forces a new member here
     /// (through [`SweepAdjustment::kind`]'s exhaustive match), which forces every walk over
     /// `ALL` to say what that kind looks like and how it is spelled.
     ///

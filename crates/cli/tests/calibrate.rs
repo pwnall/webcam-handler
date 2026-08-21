@@ -1634,14 +1634,15 @@ fn list_shows_every_session_and_one_cameras_when_a_camera_is_named() {
 
 #[test]
 fn the_session_listing_takes_every_spelling_the_other_verbs_take() {
-    // **The one camera positional that is not a `CameraArg`.** Nineteen verbs flatten that
-    // struct, whose `selector()` is `schema::selector::parse`, so they cannot fork; `calibrate
-    // list`'s camera is optional, clap flattens a struct rather than an `Option` of one, and it
-    // therefore parses on a line of its own (`cli_core`'s `CalibrateCommand::List` arm). Until
-    // note **N303** the only test on that positional passed `cam:obsbot` — an `Id` spelling
-    // `CameraId::parse` accepts identically — so swapping that line for an id-only parser left
-    // the whole workspace green while `calibrate list bus:3-4:1.0` started refusing. This is the
-    // arm that goes red on a second grammar for this one verb.
+    // **The one camera positional that is not a `CameraArg`.** Every other camera-taking verb
+    // flattens that struct, whose `selector()` is `schema::selector::parse`, so they cannot
+    // fork; `calibrate list`'s camera is optional, clap flattens a struct rather than an
+    // `Option` of one, and it therefore parses on a line of its own (`cli_core`'s
+    // `CalibrateCommand::List` arm). Until note **N303** the only test on that positional
+    // passed `cam:obsbot` — an `Id` spelling `CameraId::parse` accepts identically — so
+    // swapping that line for an id-only parser left the whole workspace green while `calibrate
+    // list bus:3-4:1.0` started refusing. This is the arm that goes red on a second grammar for
+    // this one verb.
     //
     // The spellings are read out of the committed profile the fake replays, not out of this
     // build's own answer about the camera: a test that asked `info` for the bus path and then

@@ -3849,7 +3849,7 @@
         "type": "object"
       },
       "RecordingEnd": {
-        "description": "Why a recording stopped.\n\n`RecordingSummary::cap_reached` answers a narrower question — *which bound the\ncontainer refused a frame at* — and it is `None` for every recording that ended for\none of the other four reasons below. An agent reading only that field cannot tell a\ntake that ran its whole duration from one whose camera went silent after two frames,\nand those are different findings about the device under test: the first is a\nrecording, the second is a defect. So the ending is carried as its own closed\nvocabulary, walked by\n`engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —\nbecause an ending nothing can produce is a word in a report rather than an answer.",
+        "description": "Why a recording stopped.\n\n`RecordingSummary::cap_reached` answers a narrower question — *which bound the\ncontainer refused a frame at* — and it is `None` for every recording that ended for\nany of the other reasons below. An agent reading only that field cannot tell a take\nthat ran its whole duration from one whose camera went silent after two frames, and\nthose are different findings about the device under test: the first is a recording,\nthe second is a defect. So the ending is carried as its own closed vocabulary, walked\nby `engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —\nbecause an ending nothing can produce is a word in a report rather than an answer.",
         "oneOf": [
           {
             "const": "duration",

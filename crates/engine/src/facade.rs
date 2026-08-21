@@ -426,6 +426,8 @@ impl Facade {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn profiles() -> Vec<DeviceProfile> {
@@ -728,6 +730,40 @@ mod tests {
         );
     }
 
+    /// The fake, with its own open and close counters still readable after the facade owns it.
+    ///
+    /// A decorator rather than a capability the fake grows, in the tradition of
+    /// `daemon/tests/calibrate_verbs.rs`'s `Counting`: `FakeBackend` already counts the
+    /// descriptors it hands out, because those are device facts, and all this adds is a second
+    /// handle on the backend `Facade::new` takes by value. Every method delegates, so the
+    /// facade below drives the same backend the other arms in this module drive.
+    #[derive(Debug)]
+    struct Witnessed {
+        inner: Arc<fake::FakeBackend>,
+    }
+
+    impl CameraBackend for Witnessed {
+        fn kind(&self) -> schema::backend::BackendKind {
+            self.inner.kind()
+        }
+
+        fn enumerate(&self) -> Result<Vec<CameraInfo>> {
+            self.inner.enumerate()
+        }
+
+        fn open(&self, id: &CameraId) -> Result<Box<dyn Camera>> {
+            self.inner.open(id)
+        }
+
+        fn watch(&self) -> Result<Box<dyn HotplugWatch>> {
+            self.inner.watch()
+        }
+
+        fn diagnose(&self) -> Vec<schema::report::ListHint> {
+            self.inner.diagnose()
+        }
+    }
+
     #[test]
     fn the_facade_holds_no_camera_between_calls() {
         // The property that makes it cheap to hold and safe to share: each call opens and
@@ -735,8 +771,21 @@ mod tests {
         // camera open would be a second claim on hardware whose whole contract is that one
         // streamer holds it — and the failure would appear at the *second* caller, which is
         // exactly the shape a test has to reach for.
-        let facade = facade();
+        //
+        // **The descriptor is the witness, because on this backend nothing else is.** The fake
+        // shares one `CameraState` across every handle it hands out — "two `open` calls on one
+        // camera are two views of one device" (`fake::camera`) — so a facade that had cached
+        // its first handle would answer the second open and the control read below exactly as
+        // a facade that closed it, and an arm written over those answers alone would be green
+        // on the defect it names. What separates the two readings is the count of descriptors,
+        // which is why the backend here is the fake with its counters still reachable: a handle
+        // the facade kept is an open with no close beside it.
+        let inner = Arc::new(fake::FakeBackend::new(profiles()).expect("the corpus replays"));
+        let facade = Facade::new(Box::new(Witnessed {
+            inner: Arc::clone(&inner),
+        }));
         let selector = first(&facade);
+
         let (_, first_open) = facade.open(&selector).expect("opens");
         drop(first_open);
         let (_, second_open) = facade.open(&selector).expect("opens again");
@@ -750,6 +799,23 @@ mod tests {
                 .controls
                 .is_empty(),
             "the camera answered nothing after being opened and closed twice"
+        );
+
+        // Three opens, counted rather than inferred: the two above and the one `controls`
+        // takes to answer. Asserted before the balance, because `closes() == opens()` is also
+        // what a facade that opened nothing at all would report, and this arm would then be
+        // holding a property of the number zero.
+        assert_eq!(
+            inner.opens(),
+            3,
+            "the facade took a different number of descriptors than the three calls above asked for"
+        );
+        assert_eq!(
+            inner.closes(),
+            inner.opens(),
+            "the facade is still holding {} of the {} camera descriptors it opened",
+            inner.opens() - inner.closes(),
+            inner.opens()
         );
     }
 }

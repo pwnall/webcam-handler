@@ -947,6 +947,85 @@ mod tests {
         .expect("a small JPEG stamps")
     }
 
+    /// The exact length of a header-only fixture, per format, derived from the two formats'
+    /// own framing rather than measured from the builder that emits it (N252).
+    ///
+    /// **PNG**, which is what [`png_declaring`] writes: the 8-byte signature and then three
+    /// chunks, where a chunk is a 4-byte length, a 4-byte type, its body and a 4-byte CRC.
+    /// IHDR's body is the two 4-byte extents and five bytes of colour description, so 13 and
+    /// the chunk is 25. IDAT's body is the shortest zlib stream that decodes to nothing — a
+    /// 2-byte header, a 5-byte final stored block of length zero, and the 4-byte Adler-32 of
+    /// the empty input — so 11 and the chunk is 23. IEND's body is empty, so the chunk is 12.
+    /// 8 + 25 + 23 + 12 = 68.
+    ///
+    /// **JPEG**, which is what [`jpeg_declaring`] writes: SOI and EOI are bare 2-byte markers,
+    /// and every other segment is a 2-byte marker followed by a length field that counts
+    /// itself and the body after it. DQT carries a 1-byte identifier and a 64-entry table, so
+    /// its length field reads 67 and the segment is 69. SOF0 carries a 15-byte frame header,
+    /// so 17 and 19. Each of the two DHTs carries an 18-byte table, so 20 and 22. SOS carries
+    /// a 10-byte scan header, so 12 and 14. 2 + 69 + 19 + 44 + 14 + 2 = 150.
+    ///
+    /// Neither figure depends on the extents the fixture declares, because PNG writes them in
+    /// IHDR's fixed 4-byte fields and JPEG in SOF0's fixed 2-byte fields — which is why one
+    /// row per format is the whole table, and which is the claim
+    /// [`a_header_only_fixture_weighs_exactly_what_its_format_frames`] drives.
+    const HEADER_ONLY_FIXTURE_BYTES: [(PhotoFormat, usize); 2] =
+        [(PhotoFormat::Png, 68), (PhotoFormat::Jpeg, 150)];
+
+    /// What [`HEADER_ONLY_FIXTURE_BYTES`] says a fixture of `format` weighs.
+    fn header_only_bytes(format: PhotoFormat) -> usize {
+        HEADER_ONLY_FIXTURE_BYTES
+            .into_iter()
+            .find(|(candidate, _)| *candidate == format)
+            .map(|(_, bytes)| bytes)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{format:?} has no row in the header-only fixture table, so nothing here \
+                     can say what a header-only fixture of it should weigh"
+                )
+            })
+    }
+
+    #[test]
+    fn a_header_only_fixture_weighs_exactly_what_its_format_frames() {
+        // What stood where the arms below now read this table was `bytes.len() < 1_024`, a
+        // bound a builder that had grown nine hundred bytes of raster would have passed — and
+        // an arm that feeds a decoder real pixels while its sentence says it is feeding it
+        // none is green about something nobody asked. The lengths come from the derivation on
+        // the table, not from these builders, so a builder and the prose beside it cannot
+        // drift together (N252).
+        //
+        // Several extents apiece, because the table's last sentence is that the length does
+        // not depend on the declared size: the smallest value each header field holds, the
+        // largest, and sizes in between — including the ones the arms below ask for, and
+        // bracketing the widths those arms derive from this build's decode budget.
+        for (width, height) in [
+            (1u32, 1u32),
+            (4_096, 4_096),
+            (200_000, 200_000),
+            (u32::MAX, u32::MAX),
+        ] {
+            assert_eq!(
+                png_declaring(width, height).len(),
+                header_only_bytes(PhotoFormat::Png),
+                "`png_declaring({width}, {height})` is not the length PNG's own framing gives \
+                 it, so either this builder no longer writes a header with nothing behind it \
+                 or the derivation on `HEADER_ONLY_FIXTURE_BYTES` is wrong, and every arm \
+                 that hands a decoder one of these fixtures is proving something else"
+            );
+        }
+        for (width, height) in [(1u16, 1u16), (640, 480), (u16::MAX, u16::MAX)] {
+            assert_eq!(
+                jpeg_declaring(width, height).len(),
+                header_only_bytes(PhotoFormat::Jpeg),
+                "`jpeg_declaring({width}, {height})` is not the length JPEG's own framing \
+                 gives it, so either this builder no longer writes a header with nothing \
+                 behind it or the derivation on `HEADER_ONLY_FIXTURE_BYTES` is wrong, and \
+                 every arm that hands a decoder one of these fixtures is proving something else"
+            );
+        }
+    }
+
     /// A PNG that declares a raster and carries none of it: an IHDR saying `width` by
     /// `height` in 8-bit RGBA, one deflate stream of nothing, and the end marker.
     ///
@@ -1076,11 +1155,13 @@ mod tests {
             (PhotoFormat::Jpeg, jpeg_declaring(u16::MAX, u16::MAX)),
             (PhotoFormat::Png, png_declaring(200_000, 200_000)),
         ] {
-            assert!(
-                bytes.len() < 1_024,
-                "the {format:?} fixture is {} bytes and is meant to be a header with no raster \
-                 behind it",
-                bytes.len()
+            assert_eq!(
+                bytes.len(),
+                header_only_bytes(format),
+                "the {format:?} fixture is not the length its format frames, so what this arm \
+                 hands the decoder is no longer a header with no raster behind it, and the \
+                 refusal below could be about how big this file is rather than about how big \
+                 it says its raster is"
             );
             let refusal = read(&bytes).expect_err(
                 "a photograph declaring more raster than this build will allocate was decoded \

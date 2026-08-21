@@ -53,11 +53,11 @@ path, `bus:`, `usb:`, `serial:` — design D14), list capabilities, drive contro
 in-process (no ffmpeg, no v4l2-ctl at runtime), account for a stream's delivery health
 from its own frames (D16), compare two profiles at the device level and two photographs
 as peers (D15, D17), and run calibration sessions — agent-driven from the CLI,
-human-driven from the web client (D8, D20). **Every D14–D20 surface is design v3's,
-landing across docs/13's P7–P9**: between adoption and a surface's own sub-milestone,
-the design is the commitment and the tree is the state, and the phase ledger says which
-is which — the same present-tense-at-adoption reading every sentence below that names a
-D14–D20 mechanism carries.
+human-driven from the web client (D8, D20). **Every D14–D20 surface is design v3's, and
+all of them landed across docs/13's P7–P9, which closed on 2026-08-21**: the reading that
+separated commitment from state between adoption and a surface's own sub-milestone has
+been discharged, so every sentence below that names a D14–D20 mechanism is now a sentence
+about the tree, and the phase ledger says when each one became one.
 
 Rust 2024 workspace, one library + four consumers: `webcam-handler-schema` (every shared
 type, the backend traits, `BackendKind`), `webcam-handler-imaging` (codecs, our AVI
@@ -76,12 +76,12 @@ short-name question is design §8.11 and **nothing renames before the owner rule
 name sweep is always its own sub-milestone, and the `wch_*` wire namespace is a wire
 break no sweep may touch**, N91).
 
-Work is phase-gated (docs/13: P7–P9 open, gates G7–G9; P0–P6 are closed — the ledger is
-`docs/historical/7-…-v2.md` and the G6 whole-tree review is `docs/11`); each gate is a
-named, counted, re-runnable `just gate-gN` over `scripts/gates/phase-criteria.tsv` — one
-row per criterion, added in the same commit as the thing it proves. Work lands in
-session-sized sub-milestones ending at committed boundaries with `just ci` green and the
-notes current; the phase review gets its own session.
+Work is phase-gated (docs/13: P7–P9 closed at G7–G9 on 2026-08-21, as P0–P6 were before them —
+docs/13 carries the v3 ledger, `docs/historical/7-…-v2.md` the v2 one, and the whole-tree
+review that closed G6 is `docs/11`); each gate is a named, counted, re-runnable `just gate-gN`
+over `scripts/gates/phase-criteria.tsv` — one row per criterion, added in the same commit as
+the thing it proves. Work lands in session-sized sub-milestones ending at committed boundaries
+with `just ci` green and the notes current; the phase review gets its own session.
 
 ## Read before changing anything
 
@@ -250,14 +250,15 @@ notes current; the phase review gets its own session.
   the daemon records nothing it wasn't asked to. The session tree is created private
   (0700/0600) and a wider tree is refused, never repaired (N142, N150). Stored session
   photographs leave the machine through exactly one door — D20's `/session-photo`
-  (lands P9b), reference-addressed, on the gated list.
+  (landed at P9b), reference-addressed, on the gated list.
 - The web listener is opt-in, loopback + token by default; the UDS directory is 0700.
-  The token gates the routes that carry or drive the camera — `/rpc`, `/preview`, and
-  (once D20 lands) `/session-photo`, which `daemon::http::CAMERA_BEARING_PATHS` names —
-  and **not** the static assets, which are this project's own open-source code (owner
-  ruling, 2026-08-12; N82). A route added without a gate is the defect class that ruling
-  created: `web-routes-are-gated.sh` and `every_camera_bearing_route_is_behind_the_gate`
-  are the two halves that go red on it. Provenance runs before credentials; every
+  The token gates the routes that carry or drive the camera — `/rpc`, `/preview` and,
+  since D20 landed at P9b, `/session-photo`, which
+  `daemon::http::CAMERA_BEARING_PATHS` names — and **not** the static assets, which
+  are this project's own open-source code (owner ruling, 2026-08-12; N82). A route
+  added without a gate is the defect class that ruling created:
+  `web-routes-are-gated.sh` and `every_camera_bearing_route_is_behind_the_gate` are
+  the two halves that go red on it. Provenance runs before credentials; every
   credential presented must verify, truncated spellings included (N74, N250); the
   journald sink redacts the token and the terminal does not (N182). Weakening any of
   this is an owner decision, not a convenience fix.

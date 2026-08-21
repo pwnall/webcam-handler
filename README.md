@@ -8,16 +8,16 @@ Everything happens in-process. No `v4l2-ctl`, no `ffmpeg`, no external binaries 
 runtime — the tool links Rust libraries and talks to the kernel itself.
 
 **Status: under construction.** The architecture is settled (`docs/12`) and the work is
-phase-gated (`docs/13`): P0–P6 are closed — P6's gate `G6` holds as 39 named, counted,
-re-runnable criteria. `record` is here: an AVI muxer and a Y4M sink written in-process,
-duration and size caps, the three wire methods, one verb on both command-line roots, and a
-preview that is fed the recording's own frames. `docs/agent-guide.md` is generated from the
-command surface it teaches. P6 closed with an adversarial review of the whole tree
-(`docs/11`), its seventy-nine findings repaired, and the reconciliation those repairs owed the
-rubric (`docs/14`). The v3 document set is adopted as of P7a and the v2 series it supersedes
-lives under `docs/historical/`; P7–P9 add the consumer contracts (camera selectors, a masked
-profile compare, stream statistics, photograph comparison, an embedding facade) and turn the
-web client into the operator's workbench.
+phase-gated (`docs/13`): P0–P9 are closed — the ten gates `g0`–`g9` hold 266 named, counted,
+re-runnable criteria between them, `g9`'s twelve last. `record` is here: an AVI muxer and a
+Y4M sink written in-process, duration and size caps, the three wire methods, one verb on both
+command-line roots, and a preview that is fed the recording's own frames.
+`docs/agent-guide.md` is generated from the command surface it teaches. P6 closed with an
+adversarial review of the whole tree (`docs/11`), its seventy-nine findings repaired, and the
+reconciliation those repairs owed the rubric (`docs/14`). The v3 document set is adopted as of
+P7a and the v2 series it supersedes lives under `docs/historical/`; P7–P9 added the consumer
+contracts (camera selectors, a masked profile compare, stream statistics, photograph
+comparison, an embedding facade) and turned the web client into the operator's workbench.
 
 ## Deliverables
 

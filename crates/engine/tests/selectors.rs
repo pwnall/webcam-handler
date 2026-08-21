@@ -404,9 +404,12 @@ fn spelling_in_document(
 #[test]
 fn the_ids_a_listing_hands_out_are_the_same_whichever_spelling_asked() {
     // D14's load-bearing claim — selection never filters enumeration — over the corpus, where
-    // it can actually go wrong: D1 assigns collision ordinals across the whole machine, and
-    // two of these profiles are the same card name. An implementation that narrowed the
-    // listing before resolving would answer with ordinals computed over the narrowed set.
+    // it can actually go wrong: the Chicony pair shares a USB id *and* a serial and three
+    // profiles' `/dev/videoN` paths overlap [PF:22], so a `usb:`, a `serial:` and a node path
+    // can each name two cameras on this listing while every profile's bus path is its own. An
+    // implementation that narrowed the listing before resolving would answer about the wrong
+    // camera — and where a card name did collide it would answer with D1's ordinals computed
+    // over the narrowed set, which is the same defect one tier down.
     let cameras = machine();
     for info in &cameras {
         let by_id = resolve_one(&cameras, info.id.as_str()).expect("an id resolves");

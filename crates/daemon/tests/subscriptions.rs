@@ -127,6 +127,7 @@ use std::sync::Arc;
 use api::{WchRpcClient, rpc_code};
 use fake::Fault;
 use schema::backend::{CameraBackend, HotplugEvent};
+use schema::camera::CameraId;
 use schema::error::ErrorKind;
 use schema::limits;
 use schema::metrics::MetricName;
@@ -256,7 +257,86 @@ async fn until_the_sweep_stops(watching: &mut Watching) -> ProgressEvent {
 /// directions plus the disconnect test, in milliseconds — which is what says the second
 /// question is really asked and really answered by the daemon rather than by this helper.
 async fn still_answers(connection: &mut Ws<tokio::net::UnixStream>, ask: &Ask, after: &str) {
-    still_answers_about(connection, ask, after, FIXTURE_CAMERAS).await;
+    still_answers_about(connection, ask, after, FIXTURE_CAMERAS, None).await;
+}
+
+/// The id behind the selector every suite here asks its questions with.
+///
+/// The `Ask` carries a *spelling* on purpose — a verb takes the selector a caller typed — and
+/// what a listing answers with is an id, so the two meet here rather than at each caller.
+fn asked_id(ask: &Ask) -> &CameraId {
+    match &ask.camera {
+        schema::selector::CameraSelector::Id(id) => id,
+        other => {
+            panic!("the fixture asks about a camera by something other than its id: {other:?}")
+        }
+    }
+}
+
+/// The camera ids one `wch_list` answer names, parsed.
+///
+/// Parsed rather than looked for in the printed answer, because the fixture's second camera is
+/// the first one renamed (`support::fixture::second_camera` appends to the card) and its id
+/// therefore carries the first one's as a prefix: over this machine a substring search cannot
+/// tell a listing that lost the first camera from one that lost the second, which is the whole
+/// distinction the caller below is asking about.
+fn listed_ids(listed: &serde_json::Value, after: &str) -> Vec<CameraId> {
+    listed["result"]["cameras"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{after}: the daemon answered no listing at all: {listed}"))
+        .iter()
+        .map(|camera| {
+            let spelled = camera["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{after}: a listed camera with no id: {camera}"));
+            CameraId::parse(spelled).unwrap_or_else(|| {
+                panic!("{after}: the daemon listed `{spelled}`, which is not an id")
+            })
+        })
+        .collect()
+}
+
+/// What one listing must say: how many cameras, and which machine they are on.
+///
+/// `FIXTURE_CAMERAS - 1` is equally true of a machine that lost the camera the fault was aimed
+/// at and of one that lost the other, and D19 is a claim about the first: "`list` stops naming
+/// the camera". So every listing this file reads back is asked for the identity too, in
+/// whichever direction the caller is in a position to claim — the two loss callers pass the id
+/// they killed and must not find it, and every other caller passes `None` and must still find
+/// the camera the suite asks its questions about. Both arms are driven from this file, so
+/// neither is a branch that only ever reads as a pass (notes **N160**, **N231**).
+///
+/// The arity is asserted **here** rather than beside the one caller that reads a listing off a
+/// WebSocket, for two reasons. It keeps one home for where a listing's cameras live in the
+/// answer — this function and its caller were reading `result.cameras` out of the same document
+/// twice. And it leaves the plain `POST /` arm below a claim that goes red when a listing is the
+/// wrong size: until this helper replaced it, that arm asserted the asked camera's spelling was
+/// in the body, so a loss caller that now passes `gone` would otherwise be left holding an
+/// absence and nothing else on the one transport those lines exist to speak for.
+fn the_listing_is_about_the_machine_that_is_left(
+    listed: &serde_json::Value,
+    ask: &Ask,
+    after: &str,
+    cameras: usize,
+    gone: Option<&CameraId>,
+) {
+    let named = listed_ids(listed, after);
+    assert_eq!(
+        named.len(),
+        cameras,
+        "{after}: the daemon stopped listing its cameras: {listed}"
+    );
+    match gone {
+        Some(gone) => assert!(
+            !named.contains(gone),
+            "{after}: {gone} vanished mid-stream and the daemon's next listing still names it: \
+             {named:?}"
+        ),
+        None => assert!(
+            named.contains(asked_id(ask)),
+            "{after}: the daemon stopped listing the camera this suite asks about: {named:?}"
+        ),
+    }
 }
 
 /// How many cameras the fixture backend replays.
@@ -268,18 +348,18 @@ async fn still_answers(connection: &mut Ws<tokio::net::UnixStream>, ask: &Ask, a
 const FIXTURE_CAMERAS: usize = 2;
 
 /// [`still_answers`], for a caller that knows the machine has changed under it.
+///
+/// `gone` is the camera that left, when one did: how many cameras a listing names and *which*
+/// ones it names are two claims, and only the second is D19's.
 async fn still_answers_about(
     connection: &mut Ws<tokio::net::UnixStream>,
     ask: &Ask,
     after: &str,
     cameras: usize,
+    gone: Option<&CameraId>,
 ) {
     let listed = connection.call("wch_list", json!({})).await;
-    assert_eq!(
-        listed["result"]["cameras"].as_array().map(Vec::len),
-        Some(cameras),
-        "{after}: the daemon stopped listing its cameras: {listed}"
-    );
+    the_listing_is_about_the_machine_that_is_left(&listed, ask, after, cameras, gone);
 
     let refused = connection
         .call("wch_info", json!({ "camera": &ask.unknown_camera }))
@@ -300,13 +380,19 @@ async fn still_answers_about(
 /// upgrade and the calls share one listener (`daemon::uds`), so a subscription that damaged
 /// the socket would be visible on the transport that never subscribes.
 async fn a_fresh_client_is_served(fixture: &Fixture, ask: &Ask, after: &str) {
-    a_fresh_client_is_served_about(fixture, ask, after, FIXTURE_CAMERAS).await;
+    a_fresh_client_is_served_about(fixture, ask, after, FIXTURE_CAMERAS, None).await;
 }
 
 /// [`a_fresh_client_is_served`], for a caller that knows the machine has changed under it.
-async fn a_fresh_client_is_served_about(fixture: &Fixture, ask: &Ask, after: &str, cameras: usize) {
+async fn a_fresh_client_is_served_about(
+    fixture: &Fixture,
+    ask: &Ask,
+    after: &str,
+    cameras: usize,
+    gone: Option<&CameraId>,
+) {
     let mut fresh = Ws::connect(&fixture.socket).await;
-    still_answers_about(&mut fresh, ask, after, cameras).await;
+    still_answers_about(&mut fresh, ask, after, cameras, gone).await;
 
     let answered = support::call(
         &fixture.socket,
@@ -314,11 +400,15 @@ async fn a_fresh_client_is_served_about(fixture: &Fixture, ask: &Ask, after: &st
     )
     .await
     .expect("the daemon is listening");
-    assert!(
-        support::body(&answered).contains(&ask.camera.to_string()),
-        "{after}: the transport that never subscribes stopped answering: {}",
-        support::body(&answered)
-    );
+    // The third transport is asked the same question rather than searched for a spelling: a
+    // `contains` over this body said the vanished camera was still there and read as the
+    // daemon still answering, because the surviving camera's id carries the vanished one as a
+    // prefix. Parsed, the two are told apart.
+    let body = support::body(&answered);
+    let served: serde_json::Value = serde_json::from_str(body).unwrap_or_else(|err| {
+        panic!("{after}: the transport that never subscribes stopped answering: {err}: {body}")
+    });
+    the_listing_is_about_the_machine_that_is_left(&served, ask, after, cameras, gone);
 }
 
 // --------------------------------------------------------------------------- claim 1: both
@@ -1195,17 +1285,21 @@ async fn a_subscription_outlives_the_session_it_watched_and_carries_the_next_one
     // true if the two agree.
     assert_eq!(failure, refused.kind(), "{refused}");
 
-    // One camera fewer than the fixture started with, and that is the assertion rather than
-    // an adjustment: the sweep above met `DeviceGoneMidStream`, and a device that vanished
-    // mid-stream has left the machine (design D19) — so the daemon's next listing must stop
-    // naming it. A fake that answered `DeviceGone` to a frame and went on enumerating the
-    // camera would be a shape no machine has, and a consumer's re-enumeration — the thing
-    // D19 says a caller does next — would find the camera and carry on.
+    // One camera fewer than the fixture started with, and *that* camera, which are two
+    // assertions rather than an adjustment: the sweep above met `DeviceGoneMidStream`, and a
+    // device that vanished mid-stream has left the machine (design D19) — so the daemon's next
+    // listing must stop naming it. A fake that answered `DeviceGone` to a frame and went on
+    // enumerating the camera would be a shape no machine has, and a consumer's
+    // re-enumeration — the thing D19 says a caller does next — would find the camera and carry
+    // on. The id is handed in because an arity on its own is equally true of a daemon that
+    // dropped the camera nothing happened to.
+    let vanished = asked_id(&ask).clone();
     still_answers_about(
         watching.connection(),
         &ask,
         "after two sessions ended under one subscription",
         FIXTURE_CAMERAS - 1,
+        Some(&vanished),
     )
     .await;
     a_fresh_client_is_served_about(
@@ -1213,6 +1307,7 @@ async fn a_subscription_outlives_the_session_it_watched_and_carries_the_next_one
         &ask,
         "after a watched sweep was interrupted",
         FIXTURE_CAMERAS - 1,
+        Some(&vanished),
     )
     .await;
 }
@@ -1299,12 +1394,14 @@ async fn a_camera_that_vanished_under_a_photo_tells_the_watchers_it_left() {
     );
 
     // And the listing the watcher would re-read agrees with what it was told, which is the
-    // point of the event: one camera fewer, and the daemon still answering.
+    // point of the event: the camera the removals named is the camera the listing stopped
+    // naming, one fewer than before, and the daemon still answering.
     still_answers_about(
         &mut connection,
         &ask,
         "after a camera vanished under a photo",
         FIXTURE_CAMERAS - 1,
+        Some(&vanishing.id),
     )
     .await;
     a_fresh_client_is_served_about(
@@ -1312,6 +1409,7 @@ async fn a_camera_that_vanished_under_a_photo_tells_the_watchers_it_left() {
         &ask,
         "after a camera vanished under a photo",
         FIXTURE_CAMERAS - 1,
+        Some(&vanishing.id),
     )
     .await;
 }

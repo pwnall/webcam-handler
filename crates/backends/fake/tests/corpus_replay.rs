@@ -203,9 +203,10 @@ fn every_committed_profile_is_the_same_device_as_its_identity_rewritten_self() {
     // device *is*, which must not move. So every committed profile, given somebody else's
     // identity, must still compare device-equal to itself.
     //
-    // The rewrite is deliberately total: every `info` field the comparison looks at is
-    // replaced, not one of them. A rewrite of a single field would pass against a
-    // comparison that had quietly started reading `formats` out of `info`.
+    // The rewrite covers every identity field a forwarded capture moves — bus path, USB id,
+    // serial, `bus_info` and `backend`, with the derived id beside them — rather than one of
+    // them, because a rewrite of a single field would pass against a comparison that had
+    // quietly started reading one of the others out of `info`.
     for (path, profile) in corpus::load_all().expect("the corpus parses") {
         let mut forwarded = profile.clone();
         let info = &mut forwarded.invariant.info;

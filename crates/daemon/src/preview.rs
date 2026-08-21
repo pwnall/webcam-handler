@@ -1212,10 +1212,10 @@ impl Ended {
     /// written as a two-armed `match` inside [`drive`], flipping it to `Revive::Never` passed all
     /// 1 329 tests (note **N117**, mutant M11), because the *window* it serves — a reader
     /// arriving between a `STREAMOFF` and the removal that follows it — cannot be opened from
-    /// outside on purpose. Here it is a total function over five values that a test can walk, so
-    /// the rule is constrained even where the race is not reachable.
+    /// outside on purpose. Here it is a total function over every ending, which a test can walk,
+    /// so the rule is constrained even where the race is not reachable.
     ///
-    /// Exactly one ending revives, and the other four each say why not: a driver that ended
+    /// Exactly one ending revives, and every other ending says why not: a driver that ended
     /// because the *device* refused, because the camera went quiet or because it was busy with
     /// other work would be replaced by a driver meeting the same answer; a daemon that is
     /// stopping must not start a stream for a tab it is about to disconnect; and a hand-over
@@ -1900,25 +1900,57 @@ mod tests {
     }
 
     #[test]
-    fn exactly_one_ending_may_be_followed_by_a_fresh_driver_and_the_other_five_say_why_not() {
+    fn exactly_one_ending_may_be_followed_by_a_fresh_driver_and_every_other_ending_says_why_not() {
         // `Ended::revive`, walked over the whole vocabulary — which is what the decision moved
         // out of `drive` to become (note **N117**, mutant M11: as a two-armed `match` at the call
         // site it was unconstrained, because the race it serves cannot be opened on purpose from
-        // outside). Written as a list rather than as a loop over a `ALL` constant, because the
-        // point is that each answer was *chosen*: a new ending added to this enum fails to
-        // compile here until somebody says which of the two it is.
-        assert_eq!(Ended::Unwatched.revive(), Revive::IfWatched);
-        assert_eq!(Ended::HandedOver.revive(), Revive::Never);
-        assert_eq!(Ended::ShuttingDown.revive(), Revive::Never);
-        assert_eq!(Ended::Silent.revive(), Revive::Never);
-        assert_eq!(Ended::Deferred.revive(), Revive::Never);
-        assert_eq!(
-            Ended::Refused(Error::DeviceGone {
-                path: camino::Utf8PathBuf::from("/dev/video0")
-            })
-            .revive(),
-            Revive::Never
-        );
+        // outside). A table of chosen answers rather than a loop over an `ALL` constant, because
+        // `Ended` carries a payload variant and `closed_vocabulary!` generates no `ALL` for one
+        // — and because the point is that each answer was *chosen* rather than derived.
+        //
+        // What keeps the table whole is `every_ending_is_spelled_out_here` and not the enum. A
+        // table one member short compiles and passes: seeded on 2026-08-21 by adding an ending
+        // to the enum and giving it an arm in `revive` — the shape `ca7fc89` landed when it
+        // added `HandedOver` — this arm stayed green with a member of the vocabulary it never
+        // mentions, which is the whole of what it exists to walk (note **N344**).
+        fn every_ending_is_spelled_out_here(ending: &Ended) {
+            // No arm does anything: this match is here so that an ending added to the enum
+            // stops *this* arm compiling as well as `revive`'s own match, which is what puts
+            // whoever adds it in front of the row they have to choose. Choosing it well is
+            // still theirs; what this closes is the table that silently stops covering.
+            match ending {
+                Ended::Unwatched
+                | Ended::HandedOver
+                | Ended::ShuttingDown
+                | Ended::Silent
+                | Ended::Deferred
+                | Ended::Refused(_) => {}
+            }
+        }
+
+        for (ending, expected) in [
+            (Ended::Unwatched, Revive::IfWatched),
+            (Ended::HandedOver, Revive::Never),
+            (Ended::ShuttingDown, Revive::Never),
+            (Ended::Silent, Revive::Never),
+            (Ended::Deferred, Revive::Never),
+            (
+                Ended::Refused(Error::DeviceGone {
+                    path: camino::Utf8PathBuf::from("/dev/video0"),
+                }),
+                Revive::Never,
+            ),
+        ] {
+            every_ending_is_spelled_out_here(&ending);
+            assert_eq!(
+                ending.revive(),
+                expected,
+                "a driver that ended because {} answers the wrong thing about whether the feed \
+                 it gives up may be handed straight to a fresh driver, and `Ended::revive`'s \
+                 doc argues why each of these answers is the one it is",
+                ending.name()
+            );
+        }
     }
 
     #[tokio::test]

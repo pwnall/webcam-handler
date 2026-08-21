@@ -607,12 +607,11 @@ closed_vocabulary! {
     ///
     /// [`RecordingSummary::cap_reached`] answers a narrower question — *which bound the
     /// container refused a frame at* — and it is `None` for every recording that ended for
-    /// one of the other four reasons below. An agent reading only that field cannot tell a
-    /// take that ran its whole duration from one whose camera went silent after two frames,
-    /// and those are different findings about the device under test: the first is a
-    /// recording, the second is a defect. So the ending is carried as its own closed
-    /// vocabulary, walked by
-    /// `engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —
+    /// any of the other reasons below. An agent reading only that field cannot tell a take
+    /// that ran its whole duration from one whose camera went silent after two frames, and
+    /// those are different findings about the device under test: the first is a recording,
+    /// the second is a defect. So the ending is carried as its own closed vocabulary, walked
+    /// by `engine::record`'s `every_ending_in_the_vocabulary_is_one_a_recording_can_reach` —
     /// because an ending nothing can produce is a word in a report rather than an answer.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
     #[serde(rename_all = "snake_case")]

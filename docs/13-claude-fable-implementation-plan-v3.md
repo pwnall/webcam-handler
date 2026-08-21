@@ -93,9 +93,12 @@ but the last. The sizing lesson stands and this is its cost, paid once and state
 | P8a (repair) | `bcd2826` | the frame contract asked of **both** backends: `FrameLedger` as its one home with three callers pushing into it, so the claim rides whatever backend is in front of it (note **N290**); `wall_clock_skew_us` asserted for the first time (**N297**); `RecordReport.stats` required rather than `#[serde(default)]`-ed (**N291**); and the reading of that batch that found a measurement carried as a contract and a refusal carried as an incapacity (**N298**). The R3 stream arm ran at three attached cameras and the numbers are evidence entry **E21** |
 | P8c (repair) | `8c78cf0` | the fake losing a camera the way a machine does — the removal announced per node the camera owned, `FakeBackend::device_returns` putting it back at an address its caller names, and every door into a vanished camera refusing rather than only the listing (notes **N299**, **N300**); one `hw_gone_*` recipe per D19 clause over three variables, red on an arrangement that detaches nothing (**N301**), and the protocol a contributed E-entry must follow |
 | P9 (the floor's scope) | `556e4d2` | `mutation-scope-is-decided.sh`: every product source file of every workspace member `cargo metadata` reports is in `.cargo/mutants.toml`'s `examine_globs` or carries a dated `scope-out:` marker with a reason, both directions — three P8 modules had landed in neither list and nothing could go red on it (note **N302**); D14's selector vocabulary given one home in the generated guide (**N303**, **N308**); `calibrate list`'s camera positional armed; and `systemd-units.sh` comparing the whole sum the stop takes rather than one term of it (**N304**) |
-| P7–P9 (the documents) | *this batch* | the documents reconciled against the tree the eight batches above moved. The notes' "Expected usage" preamble gains the third consumer and the identity/description trade-off — the statement docs/12 §1 and `AGENTS.md` both end by pointing at, and which was not there to point at; **N262**'s stated measurement conditions are corrected in place and its "after" figures re-measured at the viewport the rung pins, over the fixture the claim is made on; and every live count in this document, docs/12, docs/15, `AGENTS.md`, `README.md` and `phase-criteria.tsv` is measured and restated, anchored to the commit it was true at, or replaced by the thing that reconciles it |
+| P7–P9 (the documents) | `7f37bbf` | the documents reconciled against the tree the eight batches above moved. The notes' "Expected usage" preamble gains the third consumer and the identity/description trade-off — the statement docs/12 §1 and `AGENTS.md` both end by pointing at, and which was not there to point at; **N262**'s stated measurement conditions are corrected in place and its "after" figures re-measured at the viewport the rung pins, over the fixture the claim is made on; and every live count in this document, docs/12, docs/15, `AGENTS.md`, `README.md` and `phase-criteria.tsv` is measured and restated, anchored to the commit it was true at, or replaced by the thing that reconciles it |
+| P7–P9 (a race, kept out of the prose commit) | `5496c02` | the ban on counting turns of the scheduler, which is a `sleep` with the units filed off and which N3 banned only in the spelling that has units: an arm waited `for _ in 0..8 { tokio::task::yield_now().await; }` before asserting a feed had not been released twice and went red under load about something that had not happened. The racer is named — `hand_back` on a feed somebody is reading hands it to a fresh driver, which asks a backend replaying no cameras for a `STREAMON`, is refused, and retires its own feed — the arm now reads the runtime's own live-task count either side of the drop with no await between, and `clippy.toml` holds the class with three narrow `#[expect]`s in N3's auditable shape (note **N309**). Found by the reader verifying the documents batch and kept out of it, because a race repaired inside a prose commit is a race nobody can find again |
+| P7e, P8d, P9d (the review, and its repairs) | `f9abe48` | the gate-close review, run to docs/14 Part E as one session over three gates: six lenses — four over the populations this plan named at preflight, and two cross-phase, over the rows' own populations and over the eight batches' repairs, which rubric rules 7 and 8 ask for rather than this plan — generated 128 candidates and killed 102 themselves, twenty-six reached an independent verifier whose default is REFUTED, and nine were confirmed, fifteen narrowed and two refuted — the per-lens arithmetic and the absence lists are evidence entry **E22**. What a whole-phase view saw that eight per-batch readings had not: N135's payload dispatch — the descriptor decides, never the caller's value variant — is closed on both backends and was never carried to the web client, which picked its widget off `type.kind` while `HAS_PAYLOAD` sat unread beside three names it does read, and **a landed D20 claim was green because of it**, an `<input>` on screen at every scroll position only because three compound cards rendered fields whose every write was an `EINVAL` (**N312**); the photo answer had no fence and painted under the next camera's card, M32's fifth element and the one painter every sibling module's repair had skipped (**N310**); and `g8` and `g9` ran neither the predicate suite nor its self-test, so those two phases would have closed on a habit where every block before them closed on a criterion — `just ci` ran the pair at every green boundary, which is why the louder reading, that nothing had proved those predicates can fail, is the false one (**N318**). Twice the first repair was the defect one spelling on: reading a module reach goes through the one home `rust-imports.awk`, which reroots before it flattens, after both facade predicates were taught `crate::` and still let `super::` and a renaming import shrink the population in silence (**N315**, **N328**); and the caller-named-file bound refuses by what it has read rather than by `stat(2)`'s answer, which is about a regular file and about nothing else, so `photo diff /dev/zero /dev/zero` was still OOM-killed with no document (**N329**) |
+| P7e, P8d, P9d (the closes) | *this batch* | the three gates closed. `just gate-g7`, `just gate-g8` and `just gate-g9` count the criteria table's 25 `g7`, 22 `g8` and 12 `g9` rows (`just gate-g7`, `PASS gate-g7 — 25 items examined, 0 named skip(s)`, 17m13s; `just gate-g8`, `PASS gate-g8 — 22 items examined, 0 named skip(s)`, 18m46s; `just gate-g9`, `PASS gate-g9 — 12 items examined, 0 named skip(s)`, 17m00s); the review's own record is evidence entry **E22**, written before the reconciliation as docs/14 Part E requires, and the hardware the closes owed is **E23** — the R3 rung at the four attached cameras, the Dell 4K webcam reachable for the first time, and the vivid rung at 77 controls through the blessed helper; docs/14's reconciliation record gains the first three entries it has ever held, which is Part E's meta-rule kept rather than skipped — a gate closes when its reconciliation is in that document, and the one G5 skipped cost a named class five recurrences a gate later. **The rows were audited before they were counted**, because the `what` column is the half of a criterion that says what the tree proves and nothing had ever read it: six readers over all fifty-nine `g7`, `g8` and `g9` rows, each finding then put to an independent skeptic whose default was that the row was fine; forty-three held and sixteen did not (**N335**). Eleven state something false about the tree — among them a count of one where three predicates read a design document by literal path, "Nineteen camera-taking verbs" over a tree with sixteen, a uniqueness **N291**'s own correction had already retracted, a pin resting on a card-name collision the six committed profiles do not have, and a remainder reached by subtracting a rung from a population of gate predicates that rung is not in — and five claim more than the row's own selection can see. Three of those five get the arm rather than the rewording, which is rule 1's preference, and each was driven with a defect its author did not pick: D15's format-tree permission standing beside an identity delta, `engine::facade` holding no camera between calls — witnessed through a backend that counts opens, because on the fake a retained handle is invisible to the next one — and the daemon's listing identity after a camera is lost (**N337**, **N338**). One of those three moves its row as well: the D15 identity row names its arms one at a time, so a fourth arm is a fourth name in the selection, while the other two select by module and by a name the row already carried and their arm lands inside a row nothing rewrites. The remaining two of the five gain the selection that holds their sentence, and one of those widenings named the arm it had just bought through a lone `test()` clause, which was the one thing the branch check could not see — the defect being repaired, one nesting level in (**N336**). Two classes the review had left ungated close here. A `tests` row's count of its own tests is compared, at last, against the number `counted-selections.sh` measures and prints three lines away — the figure `f9abe48` had repaired by deleting the phrase and nothing had been left able to go red on the next one (**N339**) — and that ban's own adversarial reader found it was itself one spelling: a comma kept at both ends of every word to protect `1,381` protected nothing, because a thousands separator only ever stands in the middle of a word, and `tests,` is not the noun `tests` (**N340**). The branch check stopped banning an alternation and started reading every `test()` clause: the guard that skipped a regex carrying no `\|` is deleted, so a lone clause is a branch of one, and the live population was 25 clauses over 16 rows rather than the six the finding named, because nextest spells union `+` as well as `or` — 168 named branches become 260, the 92 extra being the 92 lone clauses, and not one row goes red, which is what makes it a hole closed rather than a hole found (**N341**). A class is priced before it is declined, rather than declined in silence: a cardinal in a doc comment beside the vocabulary it counts is 137 lines under the narrowest matcher that sees all five live instances, 65 under a tight noun list that misses one of the two *wrong* ones, and 2 inside `closed_vocabulary!` blocks, where an exhaustive walk would be affordable and both figures were true — so the five are repaired the way **N319** repaired its own, one of them (`preview.rs`'s "a total function over five values") false since the commit that added the sixth member (**N342**); and the reconciler this close does land is honest about its own size, covering one of the audit's eight shapes and none of the other seven, which **N335** states rather than implies. Read adversarially, the same doc comment's arm turned out to be a hand list a seventh ending joins in silence (**N344**), and `imaging::compare`'s header-only fixtures stopped weighing whatever they liked under a `< 1_024` bound that would have passed a builder grown nine hundred bytes of raster: they weigh what a committed table derives from the two formats' own framing, PNG 68 as 8 + 25 + 23 + 12 and JPEG 150 (**N343**). `just generate` moved both committed artifacts with the batch, because `RecordingEnd`'s doc sentence is an input to the schema bundle and to the OpenRPC document. P7c's **Proves** bullet is corrected beside itself rather than three rows and a section away; and this document's live counts are reconciled, including the one it had wrong about the tree it was committed into |
 
-Counts at `556e4d2`, the last commit in the table with a hash, every one of them read out of
+Counts at `556e4d2`, the last of the eight implementation batches, every one of them read out of
 that commit's own tree and re-measured for this line rather than copied from another document:
 **43 gate predicates** (`scripts/gates/*.sh` less the four harness files `gate_predicates`
 excludes), **502 fail arms across 43 case files** (`selftest.sh` prints the pair on every run
@@ -105,13 +108,29 @@ two numbers and `web_browser.rs`'s floor. The docs-only batch below `556e4d2` ad
 predicate, no case file, no criteria row and no test, so the same six figures described the tree
 this sentence was committed into.
 
-**The P7e/P8d/P9d gate-close review's repairs move four of the six** (2026-08-21), and the four
-are re-measured here rather than reasoned about from the diff. The browser rung is **44 claims and
-461 assertions** — still `browser/claims.json`'s own two numbers and `web_browser.rs`'s floor,
-raised in the same diff as the seven claims that landed the G9 lens's findings (notes
-**N310**–**N314**). The suite is **514 fail arms across the same 43 case files**, twelve of them
-the red-on-inverse arms for the five gate repairs the review returned (notes
-**N315**–**N318** and **N323**). And
+**The P7e/P8d/P9d gate-close review's repairs move five of the six** (2026-08-21), and the five
+are re-measured on the tree they land in rather than reasoned about from the diff. The browser
+rung is **44 claims and 461 assertions** — still `browser/claims.json`'s own two numbers and
+`web_browser.rs`'s floor, raised in the same diff as the seven claims that landed the G9 lens's
+findings (notes **N310**–**N314**); no file under `crates/web/` moves after that, so the pair
+describes the tree this sentence is committed into as well. The suite is **533 fail arms across
+the same 43 case files**, and it reached that figure in two steps this block owns. **Twenty-two**
+are the red-on-inverse arms for the five gate repairs the review returned (notes
+**N315**–**N318** and **N323**) — the figure and its attribution are one claim, and the five
+files carry it: between `556e4d2` and `f9abe48` `avi-reparse-is-independent` goes 10 → 12,
+`counted-selections` 9 → 11, `facade-is-the-composition` 38 → 45, `facade-stability-table-sync`
+25 → 34 and `profile-partition-is-closed` 9 → 11, no sixth case file moves, and the 502 stated
+above plus those twenty-two is 524. The remaining **nine** are the closes' own and stand in one
+file, `counted-selections.cases.sh` going 11 → 20: three for the ban on a `tests` row's count of
+its own tests (**N339**), two more for the spelling that ban turned out to be (**N340**), three
+for the branch check reading a lone `test()` clause as a branch of one (**N341**), and one for
+the bare multiple of ten that ban could not read (**N345**); 524 plus those nine is 533. **This
+sentence first read 514, and twelve, and the two were one error**: 502 plus twelve is 514, so the
+total was derived from the attribution rather than counted. Where the twelve itself came from is
+not recoverable, and the diff is not where — `git diff 556e4d2 f9abe48 -- scripts/gates/cases/`
+adds twenty-two `fail_case_` lines and removes none. That is the class note **N334** records
+against docs/15, met twice in one batch's own prose. It is corrected at P9d, where this
+document's live counts are reconciled, and the per-file arithmetic above is what reconciles it. And
 the criteria table is **25 `g7` rows, 22 `g8` rows, 12 `g9` rows**: g8 and g9 each gain the
 `run-all.sh` + `selftest.sh` pair that g0 through g7 open with and those two blocks opened without,
 g8 gains the `smoke-hw.sh` row P8c's own **Proves** bullet was owed and the two reconcilers whose
@@ -146,11 +165,15 @@ library consumer needs before its own bring-up starts. Gate `g7`.
 **Where the criteria are, 2026-08-20.** The **Proves** bullets below were commitments when this
 plan was adopted; what enforces them is `scripts/gates/phase-criteria.tsv`'s `g7` block, which
 accreted row by row with the work that earned each one — the convention above — and whose size
-at `556e4d2` the execution record states. Several arrived only in the repair batches — the three
-D15 claims nothing could go red on (a section list, a rendered caveat and a conditional's
-false branch, note **N287**) and D18's facade criteria among them — so a bullet here and a
-row there are the same claim at two ages, and the tsv is the one that runs. **`g7` is not
-closed**: P7e is the close and it has not happened.
+at `556e4d2`, and again at `f9abe48`, the execution record states. Several arrived only in the
+repair batches — the three D15 claims nothing could go red on (a section list, a rendered
+caveat and a conditional's false branch, note **N287**) and D18's facade criteria among them —
+so a bullet here and a row there are the same claim at two ages, and the tsv is the one that
+runs. **`g7` closed on 2026-08-21** over the table's 25 rows (`just gate-g7`, `PASS gate-g7 —
+25 items examined, 0 named skip(s)`, 17m13s), the last of them the `cli-parity.sh` row P7d's
+bullet had been delegating a claim to without naming it (note
+**N318**), and its rows audited one by one before they were counted, several of them reworded at
+the close to what the tree does (note **N335**); P7e is the close and what it cost is below.
 
 ### P7a — Adoption of the v3 document set
 
@@ -191,8 +214,13 @@ run once and recorded. **Sizing:** one session including its reader.
 document verb on both roots (T4's below-the-executor clause; `cli-parity.sh` gains the
 `document` bucket with its argument); `corpus_replay` deletes its private mask and
 consumes the projection; schemas and guide regenerated. **Proves:** partition closure (a
-field added to `ProfileInvariant` breaks the compile until sided — the arm is a
-compile-fail fixture); every committed profile device-equals its identity-rewritten self
+field added to `ProfileInvariant` breaks the compile until sided — *this bullet commissioned a
+compile-fail fixture and the tree holds a predicate instead:
+`scripts/gates/profile-partition-is-closed.sh` reads the declaration and the destructuring and
+counts the partitions it closed, which is five at `f9abe48` and was four until the review found
+`CameraFingerprint` closed by nothing, note **N323**. The delta was recorded in docs/15 and in
+the execution record above rather than here, which is the correction P7e owed this bullet*);
+every committed profile device-equals its identity-rewritten self
 and device-differs from every other, sections named; the format-tree-only distinction
 survives into the DTO; identity deltas match `differing_fields`. **Terminal rungs:** none
 beyond `just ci` (corpus-shaped by design; §3.3 item 11 stays open and says why).
@@ -222,10 +250,39 @@ equivalence criterion.
 
 ### P7e — G7 close
 
-All `g7` rows counted; the review session (docs/14 Part E — populations named at
-preflight: the selector vocabulary walk, the projection destructuring, the facade's
-export list); fixes; evidence entry; reconciliation into docs/14's record. **Then** the
-notes and this document's live counts reconciled.
+**Closed 2026-08-21.** The criteria table's 25 `g7` rows counted by `just gate-g7`
+(`just gate-g7`, `PASS gate-g7 — 25 items examined, 0 named skip(s)`, 17m13s). The review ran
+to docs/14 Part E as one session over all three gates rather than three, because the three
+phases share a tree and a lens reading P9's browser claims against P7's facade is walking one
+population and not three; its two G7 lenses took the populations this plan named at preflight
+— the selector vocabulary walk and the identity/device projection destructuring in the first,
+the facade's export list and both of its new predicates in the second — and eight of the
+twenty-six findings that reached the verifier came back from them.
+
+What they cost is at `f9abe48`. `SelectorScheme::example()` is what every reader of the
+vocabulary prints and nothing reconciled it with the grammar `parse` accepts (**N320**). The
+facade's encapsulated population was derived from one spelling of a call, so an unqualified
+import shrank it in silence and reopened the bypass the predicate exists for, and the module
+reach now has one home in `rust-imports.awk` (**N315**, **N328**); the module-scope walk
+enumerated three spellings of a reachable public item and missed the fourth, a method on an
+inherent impl (**N316**); the Yes column was not closed, because `engine::photo` is Yes and its
+public API cannot be used without two No modules (**N324**); and D15's partition was closed by
+destructuring on four structs and by nothing on the fifth, `CameraFingerprint`, which is the one
+the restore guard reads (**N323**). Five present-tense transcriptions of
+`SelectorScheme::ALL.len()` survived N308's sweep, in Rust doc comments and test prose nothing
+generates from; the numbers are deleted rather than gated, because none of the five reaches a
+committed artifact — `CameraSelector`'s hand-written `json_schema` overrides its rustdoc — so the
+reader is a maintainer and a phrase naming no cardinality cannot go stale (**N319**). What
+**N319** did not do was record what it was leaving open, and the close found the class four more
+times: a cardinal in a doc comment beside the vocabulary it counts is now priced — 137 lines under
+the narrowest matcher that sees every instance, 65 under a tight noun list, 2 inside the
+`closed_vocabulary!` blocks where an exhaustive walk would be affordable — and declined with those
+numbers rather than in silence, the instances repaired and the absence written down as a limit
+(**N342**).
+
+The review's own record is evidence entry **E22**, written before the reconciliation as Part E
+requires; the reconciliation is in docs/14's record, whose first entry this is. **Then** the
+notes and this document's live counts were reconciled, at P9d.
 
 ## P8 — The instruments
 
@@ -241,7 +298,13 @@ device-loss recipes (`8c78cf0`) one. The D17 four are the ones an audit of this 
 would otherwise miss, and they make the paragraph's point rather than weakening it — they
 arrived because a scene scored 0.9688 against itself (**N266**), which is the same shape as a
 contract asserted against one backend and a double that could not produce three of D19's
-sentences. **`g8` is not closed**: P8d is the close.
+sentences. **`g8` closed on 2026-08-21** over the table's 22 rows (`just gate-g8`, `PASS
+gate-g8 — 22 items examined, 0 named skip(s)`, 18m46s): the five above the seventeen are the
+review's own, because `g8` was one of the two phase blocks that ran neither the predicate
+suite nor its self-test, and because three populations were owed a row in the same walk: the
+`smoke-hw.sh` claim P8c's **Proves** bullet had already made, and the two reconcilers whose
+committed artifacts P8 moved — `schema-artifacts-current.sh`, a criterion of no v3 phase, and
+`agent-guide-current.sh`, a criterion of no `g8` (note **N318**). P8d is the close.
 
 ### P8a — Stream stats (D16)
 
@@ -296,7 +359,27 @@ path is the testable half here). **Sizing:** one session.
 
 ### P8d — G8 close
 
-As P7e: rows counted, review in its own session, fixes, evidence, reconciliation.
+**Closed 2026-08-21.** The criteria table's 22 `g8` rows counted by `just gate-g8`
+(`just gate-g8`, `PASS gate-g8 — 22 items examined, 0 named skip(s)`, 18m46s), five of them
+landed by the review itself for the reasons the paragraph above states. The G8 lens took the
+instruments as its population — `MetricName::ALL`, `PhotoFormat::ALL`, `Fault::ALL` and
+`CapReached::ALL`, every field of `StreamStats` and `RecordReport`, D17's refusal paths and
+D19's sentences — and both of its findings were about a bound that only half-existed: the
+decode budget refused through two doors and only one of them said so, so turning the other one
+off left the whole workspace green (**N321**), and `photo diff` allocated the whole of a
+caller-named file before any bound was consulted, because the door the bound named was not the
+first door (**N322**, and **N329** for the repair that stopped measuring the file with
+`stat(2)`). A cross-phase lens added the third: the human `record` table showed none of D16's
+instrument under a renderer doc claiming both halves show the same facts (**N326**). The close
+then found that this block's own criteria said things the tree does not do, and that one of
+the repairs for it bought a claim the branch check could not see until the check stopped
+reading only alternations (**N335**, **N336**, **N341**).
+
+This gate's hardware is evidence entry **E23** — the R3 rung, including D16's stream arm, at the
+four attached cameras, and the `rung-vivid` row run with the module present, so the transcript
+holds `rung-vivid: suite run, 0 named skip(s) before it started` beside the counted decline the
+portable posture produces. The review, its own evidence entry **E22** and the reconciliation
+are P7e's, run once across the three gates.
 
 ## P9 — The operator's workbench (D20)
 
@@ -309,8 +392,11 @@ grows by roughly a third; every sub-milestone below prices its claims). Gate `g9
 record at `556e4d2`, and it grew after the browser work landed rather than with it: the four
 rows added since `a907975` are `/session-photo`'s consumer, the client's cited Rust items, the
 mutation floor's scope, and the write-during-suspend claim — while the sweep-time pane went
-into the wording of the row that was already there. **`g9` is not closed**: P9d is the
-close, and it is also where this document's own live counts are reconciled.
+into the wording of the row that was already there. **`g9` closed on 2026-08-21** over the
+table's 12 rows (`just gate-g9`, `PASS gate-g9 — 12 items examined, 0 named skip(s)`, 17m00s),
+three of them the review's for the reason `g8`'s five were (note **N318**): P9d is the close,
+and it is also where this document's own live counts are reconciled — the one it had wrong
+about its own tree included.
 
 ### P9a — The workbench shell and live tuning
 
@@ -398,10 +484,25 @@ rests on that guard, which a browser arm drives.
 
 ### P9d — G9 close
 
-Rows counted; the review session — with the P5 lesson standing (a web-client review's
-reconciliation is written, or the gate is not closed; G5's absence cost five recurrences
-one gate later); fixes; evidence; reconciliation. **This is also where the v3 plan's own
-live counts are reconciled**, docs/7's ledger-discipline applied to this document.
+**Closed 2026-08-21.** The criteria table's 12 `g9` rows counted by `just gate-g9`
+(`just gate-g9`, `PASS gate-g9 — 12 items examined, 0 named skip(s)`, 17m00s). The G9 lens
+drove the workbench in the pinned Chromium against a live daemon rather than reading it, and
+five of the twenty-six came back from it. The two the execution record above states are what
+that cost bought: the widget chosen off `type.kind` (**N312**) and the unfenced photo answer
+(**N310**). The other three: a `wch_list` in flight when the socket died rewrote the page's
+final sentence with one that opens "connected" (**N311**); a camera switch stranded the open
+session with no way back to it, and `Start` was re-entrant, so two clicks ended in a red
+`session_conflict` about the session the page had just created (**N314**). The way back to a
+stranded session is the owner's ruling and is not made here, which
+**N314** records.
+
+The P5 lesson held: the reconciliation is written into docs/14's record, and the gate closed on
+it. **This is also where the v3 plan's own live counts are reconciled**, docs/7's ledger
+discipline applied to this document — the counts paragraphs above are re-anchored at the tree the
+closes commit, and the fail-arm figure this document had wrong about the tree it was committed
+into is corrected there with the per-file arithmetic that reconciles it. The same discipline was
+applied to the criteria table itself before the three gates counted it, which is the execution
+record's row above and notes **N335**–**N344**.
 
 ## Post-plan triggers (recorded, uncommissioned)
 
