@@ -125,7 +125,8 @@ fn a_call_that_reported_one_fault_leaves_the_others_still_scripted() {
     //
     // Three scripted, one call, one reported — and the other two still on the queue.
     let backend = backend();
-    let mut camera = backend.open_fake(&first_id(&backend)).expect("open");
+    let id = first_id(&backend);
+    let mut camera = backend.open_fake(&id).expect("open");
     start(&mut camera);
 
     backend.queue_faults(&[
@@ -155,14 +156,14 @@ fn a_call_that_reported_one_fault_leaves_the_others_still_scripted() {
         "the settle fault is still the one nobody has spent"
     );
 
-    // The stream is gone with the device, so the fake refuses rather than rendering — and
+    // The device is gone with the stream, so the fake refuses rather than rendering — and
     // that refusal must not spend the settle fault either. This is the arm the review's
     // reading did not reach: three faults were taken before the `state.stream` check, so a
     // call that could never have produced a frame emptied the queue.
     let error = camera
         .next_frame(soon())
-        .expect_err("the stream is not running");
-    assert!(matches!(error, Error::DeviceIo { .. }), "{error}");
+        .expect_err("the device is not there any more");
+    assert!(matches!(error, Error::DeviceGone { .. }), "{error}");
     assert_eq!(
         backend.pending_faults(),
         vec![Fault::SettleNeverConverges],
@@ -170,7 +171,14 @@ fn a_call_that_reported_one_fault_leaves_the_others_still_scripted() {
     );
 
     // And the fault that survived all of it does what it was scripted to do, once, on the
-    // first call that actually renders a frame.
+    // first call that actually renders a frame — which needs the camera back, because a
+    // device that left refuses every door into it (design D19). The return is the machine's
+    // verb and not a fault, so it spends nothing off this queue, which is the second claim
+    // this last stretch makes.
+    backend
+        .device_returns(&id, &somewhere_else())
+        .expect("a camera that vanished can come back");
+    let mut camera = backend.open_fake(&id).expect("it opens at its new address");
     start(&mut camera);
     camera.next_frame(soon()).expect("a frame");
     assert!(
@@ -179,11 +187,117 @@ fn a_call_that_reported_one_fault_leaves_the_others_still_scripted() {
     );
 }
 
+#[test]
+fn a_vanished_camera_refuses_every_door_into_it_and_takes_them_all_back() {
+    // **D19's "and refuses every further operation"**, which the fake claimed in a doc
+    // comment and implemented for `enumerate` alone: a camera that answered `DeviceGone` to a
+    // frame and then enumerated its controls, negotiated a stream and accepted a write is a
+    // shape no machine has (E5; note **N300**). A real node whose device left answers
+    // `ENODEV` to whatever ioctl arrives next, and which ioctl it was does not change the
+    // answer — so the claim is over the doors and not over one of them.
+    //
+    // Both directions in one arm, because the inverse is what makes it mean anything: every
+    // door is walked once while the camera is here and answers, once while it is gone and
+    // refuses `DeviceGone`, and once after it comes back and answers again. A build that
+    // refused everything for ever would pass the middle third and fail the last.
+    let backend = backend();
+    let id = first_id(&backend);
+    let brightness = {
+        let camera = backend.open_fake(&id).expect("open");
+        descriptor(&camera, "brightness")
+    };
+
+    // Here: every door answers. Walked through the same vocabulary as the refusal, so the
+    // two thirds are the same population rather than two lists a reader compares by eye.
+    let mut camera = backend.open_fake(&id).expect("open");
+    for &door in Door::ALL {
+        assert!(
+            door.knock(&mut camera, &brightness).is_none(),
+            "{door} refused a camera that is on the machine"
+        );
+    }
+
+    // Gone: every door refuses with the device's own answer, and the handle a caller was
+    // already holding refuses too — the descriptor outliving the device is exactly the
+    // situation `ENODEV` exists for.
+    backend.queue_fault(Fault::DeviceGoneMidStream);
+    let refused = camera.next_frame(soon()).expect_err("the device vanished");
+    assert!(matches!(refused, Error::DeviceGone { .. }), "{refused}");
+    for &door in Door::ALL {
+        let refused = door
+            .knock(&mut camera, &brightness)
+            .unwrap_or_else(|| panic!("{door} answered for a camera that is not on the machine"));
+        assert!(
+            matches!(refused, Error::DeviceGone { .. }),
+            "{door} answered {refused} for a camera that vanished"
+        );
+    }
+
+    // **The backend's own door answers the other kind, and that is not an inconsistency**
+    // (note **N301**). `still_here` is what an already-open handle says, which is the
+    // `ENODEV` an fd gets when its device leaves. Asking the backend for the camera again is
+    // a listing miss, and D19's fourth sentence is that the listing stops naming a camera
+    // that left — so the answer is the one `V4l2Backend::open` gives for an id its
+    // `enumerate` does not name. The claim that both backends give it is
+    // `battery::arm_enumeration`'s, because that is where both of them inherit it.
+    let refused = backend
+        .open_fake(&id)
+        .expect_err("a camera that is not there cannot be opened");
+    assert!(matches!(refused, Error::CameraUnknown { .. }), "{refused}");
+
+    // Back: the doors open again, which is what stops the middle third from being a build
+    // that simply refuses.
+    backend
+        .device_returns(&id, &somewhere_else())
+        .expect("a camera that vanished can come back");
+    let mut camera = backend.open_fake(&id).expect("open");
+    for &door in Door::ALL {
+        assert!(
+            door.knock(&mut camera, &brightness).is_none(),
+            "{door} refused a camera that came back"
+        );
+    }
+}
+
+#[test]
+fn only_a_camera_that_left_can_come_back() {
+    // The refusal on the machine's own verb, and the reason it is a refusal rather than a
+    // second arrival: an `Added` event for a camera that never left is an event no machine
+    // produced, and a watcher that got one would be told a lie by the double this design
+    // uses to state D19's contract.
+    let backend = backend();
+    let id = first_id(&backend);
+    let refused = backend
+        .device_returns(&id, &somewhere_else())
+        .expect_err("this camera never left");
+    assert!(
+        matches!(refused, Error::IllegalTransition { .. }),
+        "{refused}"
+    );
+
+    let unknown = backend
+        .device_returns(
+            &schema::camera::CameraId::parse("cam:nothing-here").expect("a literal id"),
+            &somewhere_else(),
+        )
+        .expect_err("this backend never replayed that camera");
+    assert!(matches!(unknown, Error::CameraUnknown { .. }), "{unknown}");
+}
+
 // ------------------------------------------------------------------ the observations
 
 fn device_gone_mid_stream() {
     let backend = backend();
+    // Opened before the loss, because after it there is nothing left to open — which is the
+    // observation this fault is named for.
+    let mut watch = backend.watch().expect("a watch");
     let mut camera = backend.open_fake(&first_id(&backend)).expect("open");
+    let nodes: Vec<camino::Utf8PathBuf> = camera
+        .info()
+        .nodes
+        .iter()
+        .map(|node| node.path.clone())
+        .collect();
     start(&mut camera);
     camera.next_frame(soon()).expect("a frame before the fault");
 
@@ -191,10 +305,54 @@ fn device_gone_mid_stream() {
     let error = camera.next_frame(soon()).expect_err("the device vanished");
     assert!(matches!(&error, Error::DeviceGone { .. }), "{error}");
 
-    // The stream is gone with it: a device that unplugged is not a device that is between
-    // frames.
-    let after = camera.next_frame(soon()).expect_err("no stream is running");
-    assert!(matches!(&after, Error::DeviceIo { .. }), "{after}");
+    // The device is gone with the stream: a device that unplugged is not a device that is
+    // between frames, and the difference is what an unattended agent branches on.
+    let after = camera
+        .next_frame(soon())
+        .expect_err("the device is not there");
+    assert!(matches!(&after, Error::DeviceGone { .. }), "{after}");
+
+    // And the machine said so, naming **every** node that left (design D19; note **N301**).
+    // Read off the watch this test opened *before* the loss, so the event is one the machine
+    // produced rather than one anybody scripted: `pending_faults` is empty here and the walk's
+    // other half, `no_fault_fires_unless_it_was_scripted`, is what keeps that true.
+    //
+    // One per node because that is the machine's shape: the kernel emits a uevent per
+    // interface and `v4l2::hotplug::Tracker::rescan` queues one `Removed` per path that left
+    // the tree, so a double that announced once for a two-node camera would leave a node-level
+    // consumer believing the metadata node was still there.
+    let mut announced = Vec::new();
+    for _ in &nodes {
+        announced.push(
+            watch
+                .next_event(soon())
+                .expect("the watch is working")
+                .expect("a camera left and the watch was told about fewer nodes than left"),
+        );
+    }
+    assert_eq!(
+        announced,
+        nodes
+            .iter()
+            .map(|path| HotplugEvent::Removed { path: path.clone() })
+            .collect::<Vec<_>>(),
+        "a camera with {} node(s) announced {announced:?}",
+        nodes.len()
+    );
+    assert!(
+        nodes.len() > 1,
+        "the profile this walk replays owns one node, so 'one removal per node' is untested \
+         here: {nodes:?}"
+    );
+    // And nothing further about a camera that has already left. The deadline is already spent,
+    // so this answers immediately and the arm costs nothing.
+    let again = watch
+        .next_event(Instant::now())
+        .expect("the watch is still working");
+    assert_eq!(
+        again, None,
+        "one camera leaving announced more than one removal per node: {again:?}"
+    );
 }
 
 fn busy() {
@@ -543,8 +701,89 @@ fn flag_words(camera: &FakeCamera) -> Vec<(ControlSlug, u32)> {
 
 /// A deadline far enough out that only a scripted fault can beat it. Not a sleep: nothing
 /// in this crate waits (N3).
+/// Every door into an open camera that can refuse (design T2's `Camera`).
+///
+/// A closed vocabulary with an exhaustive `match`, the shape [`Fault`]'s own walk uses and
+/// for the same reason: a list of calls written inline is a claim about "every door" that a
+/// reader has to re-check, and the walk above is exactly that claim (note **N301**). Adding a
+/// member here without giving it a knock stops this build.
+///
+/// It covers the seven fallible methods and not the two infallible ones — `info` hands back a
+/// copy taken at open time and `streaming` answers `Option`, so neither has a refusal to make.
+/// The day `Camera` grows a method the compiler asks the question in ten places at once, every
+/// `impl Camera for` in this workspace included, and this vocabulary is where the answer goes.
+#[derive(Debug, Clone, Copy)]
+enum Door {
+    Formats,
+    Controls,
+    Get,
+    Set,
+    StartStream,
+    NextFrame,
+    StopStream,
+}
+
+impl Door {
+    const ALL: &'static [Door] = &[
+        Door::Formats,
+        Door::Controls,
+        Door::Get,
+        Door::Set,
+        Door::StartStream,
+        Door::NextFrame,
+        Door::StopStream,
+    ];
+
+    /// Knock, and hand back the refusal if there was one.
+    fn knock(self, camera: &mut FakeCamera, brightness: &ControlDesc) -> Option<Error> {
+        match self {
+            Door::Formats => camera.formats().err(),
+            Door::Controls => camera.controls().err(),
+            Door::Get => camera.get(brightness.id).err(),
+            Door::Set => camera
+                .set(brightness.id, ControlValue::Int(brightness.range.min))
+                .err(),
+            Door::StartStream => camera.start_stream(&StreamRequest::default()).err(),
+            Door::NextFrame => camera.next_frame(soon()).err(),
+            Door::StopStream => camera.stop_stream().err(),
+        }
+    }
+
+    /// The trait method this door is, spelled as the trait spells it.
+    fn name(self) -> &'static str {
+        match self {
+            Door::Formats => "formats",
+            Door::Controls => "controls",
+            Door::Get => "get",
+            Door::Set => "set",
+            Door::StartStream => "start_stream",
+            Door::NextFrame => "next_frame",
+            Door::StopStream => "stop_stream",
+        }
+    }
+}
+
+impl std::fmt::Display for Door {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 fn soon() -> Instant {
     Instant::now() + Duration::from_secs(1)
+}
+
+/// A different port on the same machine, for a camera coming back (design D19).
+///
+/// Written down rather than derived, because the address is the *rig's* to choose: the
+/// partner rig picks the vhci port it re-attaches on, and a stated input is what an
+/// assertion about the answer is allowed to rest on (N252).
+fn somewhere_else() -> fake::Reattachment {
+    fake::Reattachment::At {
+        bus_path: "3-7:1.0".to_owned(),
+        bus_info: "usb-0000:00:14.0-7".to_owned(),
+        first_node: 40,
+    }
 }
 
 fn start(camera: &mut FakeCamera) {

@@ -505,6 +505,20 @@ fn an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took() {
         stored.pre_snapshot.is_some(),
         "an interrupted sweep left a moved camera with nothing to restore it from"
     );
+    // **Once there is a camera to put back**, and that clause is the sentence rather than
+    // scaffolding (design D19; note **N300**). What interrupted this sweep was the device
+    // leaving the machine, and a snapshot cannot be written onto a device that is not there:
+    // this arm used to restore through the loss because the fake outlived its own
+    // `DeviceGoneMidStream` — a capability no real device exhibits, which is E5's rule read
+    // in the direction that costs something. The camera comes back in the socket it came out
+    // of, which is what an operator does and what leaves the fingerprint — and therefore the
+    // snapshot's claim on this device — unmoved.
+    let vanished = camera.info().id.clone();
+    drop(camera);
+    backend
+        .device_returns(&vanished, &fake::Reattachment::WhereItWas)
+        .expect("the camera that vanished mid-sweep comes back");
+    let mut camera = open(&backend);
     let recovery = lifecycle::recover(
         temp.store(),
         &lock,
@@ -587,7 +601,16 @@ fn a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_aga
     );
 
     // And the exit that was closed: the same control sweeps again on a healthy camera, and
-    // the session settles the ordinary way.
+    // the session settles the ordinary way. **A healthy camera means a camera** — the device
+    // this sweep lost is on the machine again before the claim is made, because a control
+    // that is sweepable is a claim about the session's bookkeeping and not about a device
+    // that is still unplugged (design D19; note **N300**).
+    let vanished = camera.info().id.clone();
+    drop(camera);
+    backend
+        .device_returns(&vanished, &fake::Reattachment::WhereItWas)
+        .expect("the camera that vanished mid-sweep comes back");
+    let mut camera = open(&backend);
     let outcome = calibrate::run(
         &context(temp.store(), &lock, &clock, &Recorder::new()),
         &mut session,

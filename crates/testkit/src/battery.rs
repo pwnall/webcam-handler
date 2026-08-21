@@ -34,15 +34,15 @@ use std::time::{Duration, Instant};
 
 use schema::backend::{BackendKind, Camera, CameraBackend, HotplugEvent};
 use schema::camera::{
-    CAP_META_CAPTURE, CAP_VIDEO_CAPTURE, CameraFingerprint, CameraInfo, FormatInfo, NodeKind,
-    PixelFormat,
+    CAP_META_CAPTURE, CAP_VIDEO_CAPTURE, CameraFingerprint, CameraId, CameraInfo, FormatInfo,
+    NodeKind, PixelFormat,
 };
 use schema::capture::{Frame, NegotiatedStream, StreamRequest};
 use schema::control::{
     ControlDesc, ControlId, ControlRange, ControlSlug, ControlType, ControlValue, KnownFlag,
     WriteWarning,
 };
-use schema::error::Error;
+use schema::error::{Error, ErrorKind};
 use schema::limits;
 use schema::pairing::looks_like_automation;
 use schema::session::SweepSpec;
@@ -421,7 +421,55 @@ fn arm_enumeration(backend: &dyn CameraBackend, log: &mut ArmLog<'_>) -> ArmOutc
         }
     }
 
+    open_names_the_listing_and_nothing_else(backend, &seen_ids, log);
+
     ArmOutcome::Ran
+}
+
+/// **An id this listing does not name is `CameraUnknown`, on every backend** (D13's
+/// registry; note **N301**).
+///
+/// The one door where the two backends disagreed about a machine event. `V4l2Backend::open`
+/// resolves through its own `enumerate()` and answers [`ErrorKind::CameraUnknown`] for an id
+/// the listing does not carry; the fake, which remembers cameras that vanished, answered
+/// `DeviceGone` for that same id after a mid-stream loss — and D19's fourth sentence is
+/// precisely that the listing stops naming a camera that left, so that is the same id. Two
+/// D13 kinds for one machine event is two wire codes, two exit codes and two different things
+/// an unattended agent does next, which is docs/11 H1's shape: a rule one backend honoured and
+/// the other did not, green on both. It is asserted here because here is where both backends
+/// inherit it (§2.11).
+///
+/// The id is built from one this backend just listed, so it is a *well-formed* id that no
+/// camera on this machine has — a malformed one would be refused by the grammar and would
+/// prove nothing about resolution — and it is checked against the listing before it is used,
+/// so a machine that happens to own it makes this a skip-shaped no-op rather than a false
+/// failure.
+fn open_names_the_listing_and_nothing_else(
+    backend: &dyn CameraBackend,
+    listed: &BTreeSet<CameraId>,
+    log: &mut ArmLog<'_>,
+) {
+    let Some(absent) = listed
+        .iter()
+        .filter_map(|id| CameraId::parse(&format!("{}-not-on-this-machine", id.body())))
+        .find(|candidate| !listed.contains(candidate))
+    else {
+        log.note("no id could be built that this listing does not already name");
+        return;
+    };
+    match backend.open(&absent) {
+        Ok(_) => log.fail(format!(
+            "open({absent}) succeeded for an id this backend's own listing does not name"
+        )),
+        Err(error) => log.require(error.kind() == ErrorKind::CameraUnknown, || {
+            format!(
+                "open({absent}) answered {error} for an id this backend's own listing \
+                 does not name; every backend answers CameraUnknown to that, including \
+                 for a camera that left the listing — a device that vanished is an id the \
+                 listing does not name and never a second spelling of it"
+            )
+        }),
+    }
 }
 
 /// Every `CameraInfo` crosses the wire and the `--json` surface; a field that does not
@@ -2595,7 +2643,6 @@ fn join_notes(notes: &[String], fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use schema::backend::HotplugWatch;
-    use schema::camera::CameraId;
     use schema::control::{Applied, ControlFlags};
     use schema::error::Result;
 
@@ -2771,7 +2818,19 @@ mod tests {
             Ok(self.cameras.clone())
         }
 
-        fn open(&self, _id: &CameraId) -> Result<Box<dyn Camera>> {
+        fn open(&self, id: &CameraId) -> Result<Box<dyn Camera>> {
+            // Resolved first, the way every real backend does — `V4l2Backend::open` walks its
+            // own `enumerate()` before it touches a node, and the fake's comment says the busy
+            // refusal has to name the node the caller asked for. A stub that answered `Busy`
+            // to an id it does not list would be answering a *resolution* question with an
+            // availability refusal, which is the conversion AGENTS rule 7 forbids, and
+            // `open_names_the_listing_and_nothing_else` is the arm that asks it (note
+            // **N301**).
+            if !self.cameras.iter().any(|info| info.id == *id) {
+                return Err(Error::CameraUnknown {
+                    requested: id.to_string(),
+                });
+            }
             Err(Error::busy("/dev/video0".into(), Vec::new()))
         }
 

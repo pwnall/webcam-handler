@@ -1428,6 +1428,17 @@ pub const HOTPLUG_QUIET_MS: u64 = 250;
 /// would defer the reading forever. This is the ceiling that makes the deferral bounded
 /// (rubric A14) — the reading happens this long after the *first* trigger of a burst
 /// however busy the socket stays.
+///
+/// **It is also what design D19's phrase "within the hotplug bounds" names, and this is the
+/// one place that says so** (note **N301**). D19 promises a `subscribe_events` watcher the
+/// removal of a camera that vanished; the ceiling on how late that removal can arrive is this
+/// number, because it is the longest this project's debounce may hold a reading for.
+/// [`HOTPLUG_WATCH_DEADLINE_MS`] is not that bound and its own doc says so in bold — it is how
+/// long the daemon's loop parks per turn — so a claim asserted against it would hold a real
+/// stack delivering at 1.5 s to a sentence D19 does not make. The hermetic twin
+/// (`engine/tests/device_loss.rs`'s watcher arm) asserts this constant bare, because there the
+/// announcement is the wake; the `hw_gone_a_watcher_*` recipe allows three times it, for the
+/// kernel, the socket and a scheduler nothing on that rung controls.
 pub const HOTPLUG_MAX_DEFERRAL_MS: u64 = 2_000;
 
 // Checked where both numbers are, for `CAMERA_IDLE_SWEEP_MS`'s reason: a ceiling at or

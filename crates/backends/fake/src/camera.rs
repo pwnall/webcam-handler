@@ -42,6 +42,7 @@ use schema::profile::DeviceProfile;
 
 use crate::fault::{Fault, FaultQueue};
 use crate::frames::{self, Knob, Scene};
+use crate::{Machine, Reattachment};
 
 /// `EINVAL`, the errno a driver returns for a value it will not take. Spelled out rather
 /// than pulled from `libc`: this crate links nothing but schema and imaging (§2.8).
@@ -96,9 +97,15 @@ pub(crate) struct CameraState {
     /// device loss a *loss* rather than one refused call: a camera that answered `DeviceGone`
     /// to a frame and went on being enumerated would be a shape no real machine has, and a
     /// consumer's re-enumeration — the thing D19 says a caller does next — would find it and
-    /// carry on. Once set, this camera is absent from `enumerate` and refuses every further
-    /// operation with `DeviceGone` (E5: the double resembles by having the same shape, and
-    /// this is the shape).
+    /// carry on. Once set, this camera is absent from `enumerate`, refuses every further
+    /// operation on an already-open handle with `DeviceGone` (a fresh `open` is a listing miss
+    /// and answers `CameraUnknown`, which is what the real backend answers), and has announced
+    /// one removal per node it owned to whoever was already watching (E5: the double resembles
+    /// by having the same shape, and this is the shape).
+    ///
+    /// Cleared by [`CameraState::returns`] and by nothing else, which is D19's last sentence:
+    /// a device that comes back is a new arrival at a new address, and until this field could
+    /// be cleared that sentence had no way to be written down (note **N300**).
     gone: bool,
     frames_delivered: u32,
     /// How many streams this camera has started, ever.
@@ -190,6 +197,42 @@ impl CameraState {
     /// Whether this camera has left the machine (design D19).
     pub(crate) fn is_gone(&self) -> bool {
         self.gone
+    }
+
+    /// Put this camera back on the machine at `at` (design D19).
+    ///
+    /// Identity moves and description does not, which is the whole of what D19 asks a
+    /// consumer to be able to see: the bus path, the bus info and every node path take the
+    /// address the caller named, and the card, the driver, the USB id, the serial and every
+    /// replayed capability stay exactly as they were. The [`CameraId`] stays too — see
+    /// [`crate::FakeBackend::device_returns`] for why that is D1's rule rather than a
+    /// shortcut.
+    ///
+    /// The stream is not running when it comes back and the frame clock starts again from
+    /// zero, because this is a node that has just been created: a returning device that
+    /// carried on the old node's sequence numbers would tell a D16 accumulator that no frames
+    /// were lost across a gap that was the device being unplugged.
+    pub(crate) fn returns(&mut self, at: &Reattachment) {
+        match at {
+            Reattachment::WhereItWas => {}
+            Reattachment::At {
+                bus_path,
+                bus_info,
+                first_node,
+            } => {
+                self.info.fingerprint.bus_path = bus_path.clone();
+                self.info.bus_info = bus_info.clone();
+                for (offset, node) in self.info.nodes.iter_mut().enumerate() {
+                    let number =
+                        first_node.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX));
+                    node.path = Utf8PathBuf::from(format!("/dev/video{number}"));
+                }
+            }
+        }
+        self.gone = false;
+        self.stream = None;
+        self.frames_delivered = 0;
+        self.timestamp_us = 0;
     }
 
     pub(crate) fn info(&self) -> &CameraInfo {
@@ -518,6 +561,10 @@ fn invalid_write(desc: &ControlDesc, message: String) -> Error {
 pub struct FakeCamera {
     state: Arc<Mutex<CameraState>>,
     faults: Arc<Mutex<FaultQueue>>,
+    /// The machine this camera sits on, so a device that leaves can say so to whoever is
+    /// watching (design D19). A camera holds it rather than the backend doing the announcing
+    /// because the loss is discovered at a `next_frame` the backend is not party to.
+    machine: Arc<Machine>,
     /// A copy, because `Camera::info` hands out a reference and the shared state is
     /// behind a lock.
     info: CameraInfo,
@@ -527,6 +574,7 @@ impl FakeCamera {
     pub(crate) fn new(
         state: Arc<Mutex<CameraState>>,
         faults: Arc<Mutex<FaultQueue>>,
+        machine: Arc<Machine>,
     ) -> FakeCamera {
         let info = {
             let mut live = lock(&state);
@@ -536,8 +584,38 @@ impl FakeCamera {
         FakeCamera {
             state,
             faults,
+            machine,
             info,
         }
+    }
+
+    /// The refusal every door into a vanished device makes, or `Ok(())` while it is here.
+    ///
+    /// **One home for D19's "and refuses every further operation"** (note **N300**): a real
+    /// node whose device left answers `ENODEV` to the next ioctl whatever that ioctl was, so
+    /// a double that answered `DeviceGone` to `next_frame` and went on enumerating controls
+    /// would be exhibiting a shape no machine has — E5's rule read in the direction that
+    /// costs something. Every *fallible* `Camera` method below asks this first, and
+    /// `a_vanished_camera_refuses_every_door_into_it_and_takes_them_all_back` walks them
+    /// through its own `Door` vocabulary to say so. The two that are not fallible make no
+    /// refusal because they have none to make: `info` hands back the copy taken at open time,
+    /// and `streaming` answers `Option` — the loss clears `stream`, so a vanished camera
+    /// answers `None` there, which is the truth rather than a refusal.
+    ///
+    /// **The refusal a fresh `open` makes is a different question and is not here** (note
+    /// **N301**). This is what a *handle* answers, which is `ENODEV` on an fd whose device
+    /// left. Asking this backend for the camera again is a listing miss —
+    /// `FakeBackend::open_fake` answers `CameraUnknown`, because that is what
+    /// `V4l2Backend::open` answers for an id its `enumerate` does not name, and one machine
+    /// event may not have two D13 kinds depending on which backend is behind it.
+    fn still_here(&self) -> Result<()> {
+        let state = lock(&self.state);
+        if state.is_gone() {
+            return Err(Error::DeviceGone {
+                path: state.capture_path(),
+            });
+        }
+        Ok(())
     }
 
     /// The focus value at which this camera's synthesized frames are sharpest, or `None`
@@ -579,10 +657,12 @@ impl Camera for FakeCamera {
     }
 
     fn formats(&self) -> Result<Vec<FormatInfo>> {
+        self.still_here()?;
         Ok(lock(&self.state).profile.invariant.formats.clone())
     }
 
     fn controls(&self) -> Result<Vec<ControlDesc>> {
+        self.still_here()?;
         if take_fault(&self.faults, Fault::InactiveFlip) {
             lock(&self.state).flip_measured_partners();
         }
@@ -603,6 +683,7 @@ impl Camera for FakeCamera {
     }
 
     fn get(&mut self, id: ControlId) -> Result<ControlValue> {
+        self.still_here()?;
         let state = lock(&self.state);
         let desc = state
             .controls
@@ -621,11 +702,13 @@ impl Camera for FakeCamera {
     }
 
     fn set(&mut self, id: ControlId, value: ControlValue) -> Result<Applied> {
+        self.still_here()?;
         let force_clamp = take_fault(&self.faults, Fault::ClampOnWrite);
         lock(&self.state).write(id, &value, force_clamp)
     }
 
     fn start_stream(&mut self, request: &StreamRequest) -> Result<NegotiatedStream> {
+        self.still_here()?;
         let mut state = lock(&self.state);
         if state.stream.is_some() {
             // V4L2 allows one streamer per node, and says so with EBUSY (D12). The stream in
@@ -653,6 +736,10 @@ impl Camera for FakeCamera {
     }
 
     fn next_frame(&mut self, deadline: Instant) -> Result<Frame> {
+        // Asked before any fault is taken: a device that has already left refuses whatever
+        // was scripted next, and consuming a one-shot on a node that is not there would spend
+        // a scripted claim on a call that could never have exhibited it (note **N232**).
+        self.still_here()?;
         // **Each fault taken where it decides the answer, and never before** (rubric A9's
         // fault-menu half; the G6 review's L35, note **N232**). All three used to come off
         // the queue at the top, so a call that reported a `FrameTimeout` also consumed the
@@ -680,9 +767,33 @@ impl Camera for FakeCamera {
             // a later return being a *new arrival*, and none of those can be driven against a
             // double that stayed enumerable.
             state.gone = true;
-            return Err(Error::DeviceGone {
-                path: state.capture_path(),
-            });
+            let path = state.capture_path();
+            // **And the machine says so**, which is D19's watcher sentence and was the one
+            // clause of the contract this double could not produce at all: the loss and the
+            // hotplug channel used to be unconnected, so "a `subscribe_events` watcher gets
+            // the removal within the hotplug bounds" had no twin on either side of the rig
+            // (note **N300**).
+            //
+            // **One removal per node the camera owns**, because that is the shape the machine
+            // has: the kernel emits a uevent per interface, `v4l2::hotplug::Tracker::rescan`
+            // turns each path that left the tree into its own `Removed`, and the committed arm
+            // `without_the_debounce_the_same_burst_costs_one_reading_per_packet` holds it to
+            // one per node. Every profile in `corpus/` owns two nodes or four, so a double
+            // that announced once for the camera left a node-level consumer believing the
+            // metadata node was still there — and the twin asserted that count as contract
+            // (note **N301**). Announced under one lock, in the order the camera declares its
+            // nodes, because one device leaving is one act.
+            let departures = state
+                .info()
+                .nodes
+                .iter()
+                .map(|node| schema::backend::HotplugEvent::Removed {
+                    path: node.path.clone(),
+                })
+                .collect();
+            drop(state);
+            self.machine.announce(departures);
+            return Err(Error::DeviceGone { path });
         }
 
         let Some(stream) = state.stream.clone() else {
@@ -743,7 +854,11 @@ impl Camera for FakeCamera {
     }
 
     fn stop_stream(&mut self) -> Result<()> {
-        // Idempotent, like `VIDIOC_STREAMOFF`: stopping a stopped stream is not an error.
+        // Idempotent, like `VIDIOC_STREAMOFF`: stopping a stopped stream is not an error —
+        // but a node whose device left answers `ENODEV` to this ioctl like any other, and
+        // every caller in this workspace stops a stream from a drop guard that already holds
+        // the answer that matters and drops this one.
+        self.still_here()?;
         lock(&self.state).stream = None;
         Ok(())
     }

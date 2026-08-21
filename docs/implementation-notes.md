@@ -27777,3 +27777,391 @@ a *measurement*, and a test that refuses the same event has given one device beh
 refusal is a rule-7 conversion however carefully the verdict is worded. A criterion that names two
 backends is a claim to resolve with `cargo nextest list`, not to read. And a doc sentence that says
 "both" is a claim that needs a population, not an example.
+
+## N299 — What a contributed E-entry about mid-stream device loss must carry
+
+**Date:** 2026-08-20. **Subject:** the D19 protocol — `WCH_DEVICE_LOSS`, `WCH_DEVICE_RETURN`, the
+`hw_gone_*` recipes in `crates/backends/v4l2/tests/hardware.rs`, and the shape of the evidence the
+partner rig sends back. **Class:** the standing protocol docs/13 P8c names under "Lands" and this
+tree did not have.
+
+D19 states a contract this rig deliberately cannot drive: the privileged helper refuses to unload
+`uvcvideo` under an open node (§2.13), so a camera vanishing *while a stream is running* is an
+event no local run produces. The design's answer is a partner rig — usb-teleporter's HIL harness
+drops the tunnel or detaches the vhci port, and a camera vanishes under the driver exactly as a
+yanked cable does — and the recipes it runs are written and committed **here**, before the event
+exists, so that the rig tests this design's claim rather than blessing whatever the code does.
+That arrangement only works if the rig can find its entry point and knows what to send back. Until
+this note the entry point existed as one `const` inside a test file and the protocol existed
+nowhere: `WCH_DEVICE_LOSS` appeared in no document, `AGENTS.md` said nothing, and a search of these
+notes for `contributed`, `partner rig` or `must carry` returned nothing about D19. A protocol a
+partner cannot address is not a protocol.
+
+**The entry point is three environment variables.** `WCH_DEVICE_UNDER_TEST` names the camera the
+recipes act on, in any spelling D14 reads — an id or its prefix, a `/dev` node path, `bus:`,
+`usb:`, `serial:` — parsed by the one parser and resolved by the one resolver. Setting it is not
+optional on a host with more than one camera: without it the recipes take whatever this tool's
+enumeration puts first, and a rig that detached a different device would get a red recipe with
+nothing to tell that from a real contract breach. Every recipe prints the camera it chose, with
+its bus path and node paths, before anything moves, so the transcript closes the question either
+way. A spelling this listing does not name is a decline naming the variable, and never a silent
+retarget onto whichever camera is left.
+
+The other two hold shell command lines. `WCH_DEVICE_LOSS` must make that camera vanish from the
+machine *while a stream is open* — this is the whole of the arrangement, and a command that merely
+stops the stream, unbinds a driver after the fd is closed, or removes a different device is testing
+something else. `WCH_DEVICE_RETURN` must put the same device back; a rig that can only detach sets
+it not at all, the return recipe declines by name, and every recipe that took the camera away says
+in its transcript that it left the machine changed. Both are run through `sh -c` with stdout and
+stderr inherited, so whatever they print is part of the transcript, and a non-zero exit fails the
+recipe rather than being interpreted. None of the three is read by any product code: they exist
+for the R3 rung and nowhere else, which is why widening them is not a security question but a
+test-rung one.
+
+**A recipe that arranged a loss puts the camera back before it ends**, through a `Drop` guard, so
+that a rig with one camera does not have every later recipe decline with "no camera is attached to
+this host" — a sentence about the host that is really about the arm before it. When
+`WCH_DEVICE_RETURN` is unset the guard prints what it could not do instead, because a run that
+left the machine changed has to say so in the evidence rather than in a reader's inference.
+
+**The recipes are `hw_gone_*`, one per clause of D19, and they are named rather than counted** —
+a count of code stated in prose is a claim something has to reconcile, and nothing reconciles this
+one (N153, N158; note **N301**). A photo answers `DeviceGone` and never a deadline, a holder or a
+capability refusal; a take driven turn by turn finalizes valid to its last frame with its end named
+and its stats carried, re-read by the independent AVI re-parser; the listing stops naming the
+camera that left and keeps the ones that did not; a watcher holding a hotplug watch opened *before*
+the loss is told the camera left, inside three times `HOTPLUG_MAX_DEFERRAL_MS` — that constant is
+what D19's phrase "within the hotplug bounds" names and its own doc in `schema::limits` now says
+so, and the multiple is this rung's standing headroom for a kernel, a socket and a scheduler no
+test here controls, so a contributed transcript is judged against `3 x 2000 ms` and the hermetic
+twin against the bare constant; and a later return is a new arrival whose fingerprint says it is
+the same device, found in the fresh listing by the *description* half — every field but the address
+— and compared through D15's own projection rather than by reading fields. Each of the four recipes
+that arrange a loss asserts the loss before it asserts anything else, so a command that exits zero
+and detaches nothing is a red arm naming `WCH_DEVICE_LOSS` rather than a green measurement of
+nothing. A contribution that runs fewer of them is still
+worth having and must say which it ran — `just smoke-hw` counts what it ran, and a recipe that
+declined is a thing that did not run rather than a thing that passed. D19's remaining sentence —
+the preview's feed ending and the camera's slot being reaped — is deliberately **not** an
+`hw_gone_*` recipe: it is a claim about what this daemon does when the device answers `DeviceGone`,
+not about what the device does, and it is driven hermetically where it belongs (the `g6` row
+`a_device_that_failed_mid_take_reaches_the_collector_and_never_the_readers_as_a_success`).
+
+**What the E-entry must carry.** A date, and the entry is append-only from then on. The producing
+rig named — the project, the mechanism (vhci port detach, tunnel drop, something else), the kernel
+release and the forwarded device — because §3.3 item 8's whole point is that this project's
+hardware evidence is one machine and one kernel, and a contribution is only a second machine if it
+says which. The **transcripts**, verbatim, including the `SKIP` lines of the recipes that declined:
+a transcript with the declines edited out reads as a fuller run than it was. The commit of this
+tree the recipes were run from, because a contract's tests are only evidence about the contract
+they were written against. And the answers themselves rather than a verdict: what the driver said,
+which nodes the kernel announced, what D15's identity half named. Nothing in a contributed entry
+may be a claim this tree cannot re-derive from the numbers beside it.
+
+**What a disagreement lands as, the same day.** D19's own last sentence: behaviour contradicting
+the contract lands as a PF entry — a finding about a device, in the registry design §1.2 keeps —
+**and** as an amendment to the fake's `DeviceGoneMidStream` fault, so the double stops claiming
+what the measurement disproved. Not one or the other: the PF entry is the record and the fake
+amendment is the thing that makes every hermetic arm in this workspace go red on the old belief.
+Until such an entry exists, every sentence of D19 is `declared`, the fake's fault carries that word
+in its own doc comment, and §3.3 item 9 says so.
+
+**Retires when:** the first contributed E-entry lands, at which point this note stops being the
+protocol and becomes its provenance — and the D19 clauses that entry measured stop being
+`declared`, one clause at a time and never in a batch.
+
+## N300 — Three sentences of D19 the double could not produce, and two engine claims that were resting on that
+
+**Date:** 2026-08-20. **Subject:** `fake::FakeBackend`'s new `Machine` event queue and
+`device_returns`, `FakeCamera::still_here`, `crates/engine/tests/device_loss.rs`,
+`crates/daemon/tests/subscriptions.rs`, and the two `engine::sweep` arms that changed with them.
+**Class:** E5's resemblance rule read in the direction that costs something — a double that was
+weaker than the machine it stands in for, and the claims that had settled onto the difference.
+
+D19 is a contract in four bullets. Three of its clauses had no producer anywhere in this tree, and
+the reason was one shape repeated: **the fake's device loss was a refused call rather than a
+device leaving.**
+
+### 1. The removal nobody was told about
+
+`Fault::DeviceGoneMidStream` set `gone` and answered `DeviceGone`; `HotplugEvent::Removed` came
+only from a *separate* one-shot `Fault::HotplugRemove`, naming whichever node the backend happened
+to list first. The two were unconnected, no test queued both, and neither `hw_gone_*` recipe opened
+a watch — so D19's "a `subscribe_events` watcher gets the removal within the hotplug bounds" had no
+twin on either side of the rig, and docs/13 P8c listed it under "Lands" regardless.
+
+The coupling is the fake's to make and it is not the kernel's job being invented. What a real
+machine does is emit a uevent per node from the kernel while the driver refuses the next ioctl, and
+what this double does is the same: **one removal per node the camera owned**, from the same event
+that sets `gone`. It announced one per *camera* when this entry was first written, on the argument
+that fewer events than a machine produces is not a shape one does not have — which was true of the
+double and false of the twin beside it, because the twin asserted the count and the `g8` row
+restated it as contract. Every profile in `corpus/` owns two nodes or four, `Tracker::rescan` emits
+one `Removed` per path that left the tree, and a node-level consumer told about the capture node
+alone still believes the metadata node is there. Corrected the same day it landed (note **N301**).
+It goes through a queue of the machine's own — `Machine::announced` — and deliberately not through
+the fault queue, because `no_fault_fires_unless_it_was_scripted` is a claim about *that* queue and
+a removal the fake produces on its own initiative would break it while looking like a fix. That
+queue is a **log with a per-watch cursor**, not a queue anybody may drain, so a watch is primed at
+the moment it opens exactly as `Tracker::primed` is — also N301, and for the same reason: the
+first shape was one the machine does not have.
+
+### 2. The device that could not come back
+
+`gone` was set at one line and cleared nowhere. There was no verb, no fault and no helper that put
+a vanished fake camera back, so D19's "a later return is a new arrival whose fingerprint tells the
+consumer it is the same device on a different address" could not be *written down*, let alone
+asserted. The fake's own `enumerate` conceded it in a comment — the state was kept so the camera
+would have somewhere to come back from, for a sentence nobody had written.
+
+`FakeBackend::device_returns(id, &Reattachment)` is that sentence's producer, and it is a verb on
+the backend rather than a member of the fault menu on purpose: a device returning is not a failure
+a `Camera` call exhibits, and `Fault::ALL`'s walks ask of each member what observing it looks like
+*at a seam*. The address is the caller's to state — `Reattachment::At { .. }` for another port,
+`Reattachment::WhereItWas` for the socket it came out of — because a fake that incremented a port
+number would be inventing a fact about a machine it is not on. What moves is `fingerprint.bus_path`,
+`bus_info` and every `/dev/videoN`; what does not move is the card, the driver, the USB id, the
+serial, the format tree, the control set and the `CameraId`, which is D1's rule rather than a
+shortcut. The twin asserts the whole of it through D15's own projection over two profiles the
+*shipped* capture path produced: `device_matches()`, and an identity half naming exactly
+`fingerprint.bus_path` and `bus_info` while every node path moved and the comparison named none of
+them \[PF:22\]. The inverse is the same camera returning where it was, whose identity half is empty.
+
+**What this deliberately does not claim** is what a returning device's control values read. The
+knobs come back where the loss left them; a real driver re-initialises a device it re-enumerates
+and nothing on this rig has ever measured what that leaves behind. `declared`, and the fault's doc
+says so.
+
+### 3. "Refuses every further operation", claimed and unimplemented
+
+`CameraState::gone`'s doc comment said a vanished camera "is absent from `enumerate` **and refuses
+every further operation with `DeviceGone`**". Only the first half was true: `is_gone()` had exactly
+one caller in the workspace, inside `enumerate`, so a camera that had just told a caller it was
+gone still opened, still enumerated its controls, still negotiated a stream and still accepted
+writes. The committed assertion went the other way and had been green for it —
+`crates/backends/fake/tests/faults.rs` asserted the *next* call answered `DeviceIo` ("the stream is
+not running", `EINVAL`), which is what a stopped stream says and not what a missing device says.
+
+The doc was right and the code was wrong, so the code moved: `FakeCamera::still_here` is the one
+home for the refusal and every `Camera` method asks it first, the way a node whose device left
+answers `ENODEV` to whatever ioctl arrives next. `open_fake` was made to ask it too and that was
+the repair over-reaching: a fresh `open` is a *listing miss*, not an fd whose device left, and
+`V4l2Backend::open` answers `CameraUnknown` for an id its own `enumerate` does not name — which a
+camera that vanished is, by this contract's own fourth sentence. Two D13 kinds for one machine
+event lasted one day and is corrected in note **N301**.
+
+### 4. What that repair found: two engine claims resting on the difference
+
+Two `engine::sweep` arms went red on the repair, and both were green for the same wrong reason.
+`an_interrupted_sweep_says_where_it_stopped_and_keeps_what_it_took` restored the pre-sweep snapshot
+onto the camera *through the loss*, and
+`a_sweep_that_stopped_before_its_first_sample_leaves_the_control_sweepable_again` swept the same
+control again on the same vanished device. Both claims are true and worth keeping; neither is a
+claim about a device that is still unplugged, and a snapshot cannot be written onto a camera that
+is not on the machine. Each now brings the camera back first — `Reattachment::WhereItWas`, which is
+what an operator does and what leaves the fingerprint, and therefore the snapshot's claim on this
+device, unmoved — and the claim it then makes is strictly stronger: the session's bookkeeping
+survived the device leaving, and the camera is restorable once there is a camera to restore.
+
+**Retires when:** nothing retires the shape. What generalises is the question, asked of every
+double: *which sentence of the contract can this stand-in not produce at all?* Three of D19's four
+bullets answered "this one", and the third defect — a doc comment describing a behaviour the code
+did not have, with a committed test asserting the opposite — is the one that had a test on it and
+was still wrong.
+
+## N301 — The rig's two halves were not asserting the same sentence, and one recipe measured nothing
+
+**Date:** 2026-08-20. **Subject:** `hw_gone_a_return_*` and the other `hw_gone_*` recipes in
+`crates/backends/v4l2/tests/hardware.rs`, `CameraFingerprint::describes_the_same_device`,
+`fake::Machine`'s event log and its condvar pairing, `FakeBackend::open_fake`,
+`testkit::battery::arm_enumeration`, and the `g8` rows and prose that had written the old shapes
+down. **Class:** the adversarial reading of N299/N300's own batch — a double that had been brought
+closer to the machine in three places and past it in three others, plus a recipe that could report
+a measurement it had not made.
+
+N300 landed the machinery D19's unmeasured clauses needed and N299 landed the protocol a partner
+rig addresses. An independent reading of that batch, before it was committed, found six defects
+worth repairing and two candidates that did not stand up. What connects the six is the sentence
+N299 exists to make true: **the hardware recipe and its hermetic twin have to be asserting the same
+claim**, and in five places they were not.
+
+### 1. The return recipe searched for the one topology its own title excludes
+
+`hw_gone_a_return_is_a_new_arrival_whose_fingerprint_says_it_is_the_same_device` waited for the
+device to reappear with `listing.iter().find(|other| other.fingerprint.matches(&info.fingerprint))`.
+`CameraFingerprint::matches` is `differing_fields(..).is_empty()`, and `differing_fields` pushes
+`bus_path` whenever the address differs — so a device re-attached on another vhci port never
+matched, the loop never broke, and the recipe died on `assert!(Instant::now() < deadline, "the
+camera did not come back inside the hotplug bounds after WCH_DEVICE_RETURN")`: a red arm blaming a
+rig whose device had come back, and naming an attach-latency problem that did not happen. D19's last
+sentence is *"a new arrival whose fingerprint says it is the same device **at a different
+address**"*, and a rig that re-attaches at the same address is the one case that sentence has
+nothing to say about — the only case the recipe could go green on. Its own body contradicted itself
+three lines apart: the search required the two bus paths to be equal and the `println!` below it
+reported which two they were.
+
+The lookup is D15's split now, and the split has a name: `CameraFingerprint::describes_the_same_device`
+is "the same device, wherever it is plugged in" — every field that disagrees is the address — beside
+`matches`, which keeps meaning "the same camera at the same address" and is the right question for a
+caller holding a listing entry. Written as *"every disagreement is `BUS_PATH`"* rather than as a
+conjunction of the other four fields, because a conjunction fails **open** the day the fingerprint
+grows a field and a claim that two devices are the same should fail closed —
+`ProfileComparison::device_differs_only_in_the_format_tree` makes the same argument about its own
+sections. `a_device_that_moved_is_still_the_same_device_and_a_different_one_never_is` holds both
+readings apart on the four cases that separate them: the same device where it was, the same device
+one port over, a *different* camera in the socket the first one left, and a different camera one
+port over. Collapsing the predicate to `matches` reddens it on "a device that came back on another
+port is the same device"; loosening `all` to `any` reddens it on "a different camera on another port
+was called the same device".
+
+### 2. The same recipe never asserted that the loss happened
+
+It ran `WCH_DEVICE_LOSS`, threw away the one answer that would have proved the device left
+(`let _ = camera.next_frame(..)`) and went looking for the camera in a listing that still had it.
+Driven on this host with a harmless arrangement — `WCH_DEVICE_LOSS='true' WCH_DEVICE_RETURN='true'`,
+three cameras attached, nothing detached — the recipe passed and printed the transcript N299 asks a
+contributed E-entry to carry: *"it left 3-4:1.0 and came back 3-4:1.0 / D15 says: same device / the
+identity half named: nothing — this rig re-attached at the same address"*. A no-op reading as a
+measurement, on the rung whose entire output is evidence: the N160/N231/N235 class one step past a
+skip that reads as a pass.
+
+Four things changed and all four were driven the same way, with `WCH_DEVICE_LOSS='true'`:
+
+- the return recipe asserts the refused frame is `DeviceGone` and then waits for the listing to stop
+  naming the camera, both naming `WCH_DEVICE_LOSS`, before `WCH_DEVICE_RETURN` is run at all;
+- `hw_gone_a_watcher_is_told_the_camera_left` asserts its post-loss frame the same way instead of
+  discarding it;
+- `hw_gone_a_take_finalizes_*`'s post-loss loop is bounded, because it broke only on `Err` and a
+  camera that never left kept delivering frames until nextest's `terminate-after` ended the run —
+  a timeout naming no sentence;
+- every loss-arranging recipe puts the camera back through a `Drop` guard when `WCH_DEVICE_RETURN`
+  is set, and says in the transcript that it did not when it is not (AGENTS rule 8; without it, a
+  single-camera rig has every later recipe decline with "no camera is attached to this host", which
+  reads as a fact about the host and is really the arm before it).
+
+All five recipes now go red on `WCH_DEVICE_LOSS='true'`, each naming the variable rather than the
+contract. Before this repair, four did and the return recipe did not.
+
+### 3. Two D13 kinds for one machine event
+
+`V4l2Backend::open` resolves through its own `enumerate()` and answers `CameraUnknown` for an id the
+listing does not name — measured here, on three attached cameras: *no camera matches
+"cam:integrated-camera-integrated-c-not-on-this-machine"*. A camera that vanished mid-stream **is**
+such an id, because D19's fourth sentence says the listing stops naming it. N300's repair had made
+the fake's `open_fake` answer `DeviceGone` for that same event and a new `g8` row blessed it, so one
+machine event carried two wire codes, two exit codes and two different next moves for an unattended
+agent — `Busy` means retry, `DeviceGone` means stop and tell the human, `CameraUnknown` means the
+selector named nothing. The engine meets it for real: `actor.rs` re-opens lazily under the stored id
+and propagates whatever the backend said.
+
+The real backend cannot tell "this id was never here" from "this id is gone", because it keeps no
+memory across an `enumerate`; the fake can, and E5 says a shape no real stack exhibits is a bug in
+the double. So the fake gives the real backend's answer, and `FakeCamera::still_here` keeps
+`DeviceGone` for what it is actually about — the refusal an **already-open handle** makes, which is
+the `ENODEV` an fd gets when its device leaves. The claim that both backends answer alike is
+`battery::arm_enumeration`'s, which asks whichever backend it was handed for a well-formed id that
+backend's own listing does not name; `battery::run` still has no hermetic real-backend caller
+\[N298\], so R3 carries the real side as
+`hw_open_answers_camera_unknown_for_an_id_this_listing_does_not_name`.
+
+### 4. One removal for a camera whose two nodes both left
+
+N300 announced one `Removed` per *camera*, naming the capture node, and argued that fewer events
+than a machine produces is not a shape a machine does not have. The argument was sound about the
+double and unsound about the tree around it: the twin asserted the count —
+`assert_eq!(again, None, "one camera leaving announced itself more than once")` — and the `g8` row
+restated it as contract prose, so the double's simplification had become a claim about the machine,
+which a partner rig's first E-entry would have contradicted. And it is not a small delta: every
+profile in `corpus/` owns two nodes or four, `Tracker::rescan` queues one `Removed` per path that
+left the tree, and a node-level consumer told about the capture node alone still believes the
+metadata node is there.
+
+One removal per node now, announced under one lock because one device leaving is one act, with the
+arrival mirroring it. That also retires the `/dev/null` fallback `device_returns` used for a camera
+with no capture node — a hotplug event naming `/dev/null` is a shape no machine has, and reading the
+nodes means the question never arises. The inverse arms are "one per node and none repeated", and
+each says so where a camera with one node would make them vacuous.
+
+### 5. A watch could be told about a departure that happened before it opened
+
+`v4l2::hotplug::Tracker` is **primed** from the node tree when it opens — its own doc says "a watch
+on a machine that already has ten cameras does not announce ten arrivals" — so a node already absent
+when a subscriber arrives is never announced to it. N300's queue was a `VecDeque` explicitly never
+dropped, so a watch opened after a loss drained it and was told about a departure it could not have
+seen. That is PF:17/N136's class, and newly reachable: before this batch the queue only ever held
+events a test had scripted, whose ordering a test controls. It matters for the daemon in particular,
+because `daemon::events` runs the watch thread only while somebody is listening, so "the camera left
+while nobody was subscribed, then a subscriber arrived" is the ordinary shape of an agent
+reconnecting — and a shared queue also lets the first watch to read consume the event the second one
+was waiting for, which is a second thing no real stack does.
+
+`Machine::announced` is an append-only log and each `FakeWatch` holds its own cursor, primed to the
+log's length at `watch()`. `a_watch_opened_after_the_loss_is_told_nothing_about_it` is the arm, with
+the existing "a watch opened before the loss is told" beside it, so the two together say the priming
+is a cursor and not a mute.
+
+### 6. A lost wake-up, introduced by moving the condvar to a second mutex
+
+At HEAD the `scripted` condvar was paired with the `faults` mutex and `FakeWatch::next_event` held
+that guard from its fault check through `wait_timeout`, so a notifier had to acquire `faults` and
+could not signal inside the waiter's pre-park window. N300 moved the condvar onto `Machine::announced`
+and left `queue_fault`/`queue_faults`/`hold_fault` mutating `faults` and then calling `stirred()`,
+which notified without touching `announced` at all. A fault scripted between the watch releasing
+`faults` and parking on the condvar was therefore neither seen nor signalled, and the watch slept out
+its caller's whole deadline — up to `HOTPLUG_WATCH_DEADLINE_MS` for a daemon fixture's watch thread,
+with the answer already queued. `Machine::announce` never had the bug, because it locks `announced`
+first; only the scripted half regressed, and the field doc stating "guarded by `announced`, which is
+the mutex every waiter holds" was a premise the fault-scripting notifiers did not honour.
+
+`stirred()` takes `announced` before it signals, which is one line and restores by construction the
+property the old pairing had. The window is about a hundred nanoseconds wide, so the defect is a
+latency flake waiting for a loaded machine rather than a red suite — which is exactly why the arm
+that holds it is not a race but the invariant:
+`nothing_wakes_a_parked_watch_without_holding_the_mutex_it_parked_on` holds `announced` from the
+test thread and asserts that neither notifier gets past it, then releases it and asserts that both
+do. The passing direction cannot flake, because blocking on a held mutex is not a timing question;
+the failing direction reddens in four milliseconds, because `notify_all` on a condvar nobody is
+parked on returns in nanoseconds. It is driven for both notifiers, since only one of them has
+business with that queue and the other has to take a lock it does not otherwise need.
+
+### What was measured, and what was refuted
+
+Every mutation below was applied by hand in a scratch copy of the tree and run at workspace scope;
+the working tree was never mutated.
+
+| Mutation | What went red |
+|---|---|
+| `stirred()` back to a bare `notify_all` | the pairing arm, in 4 ms, naming "signalled the watch's condvar while another thread held the mutex that condvar is paired with" |
+| `FakeWatch` opens with `seen: 0` | `a_watch_opened_after_the_loss_is_told_nothing_about_it` |
+| `open_fake` answers `DeviceGone` for a gone camera | `a_vanished_camera_refuses_every_door_into_it_and_takes_them_all_back` |
+| the fake answers `DeviceGone` for any unlisted id | `the_fake_passes_the_battery` and `every_committed_profile_replays_through_the_conformance_battery`, through the new enumeration arm |
+| one removal per camera instead of per node | both engine watcher arms, `every_fault_in_the_menu_is_observable`, and the daemon arm as a 180 s timeout |
+| `describes_the_same_device` collapsed to `matches` | the schema arm, on "a device that came back on another port is the same device" |
+| the same predicate's `all` loosened to `any` | the schema arm, on "a different camera on another port was called the same device" |
+| the loss announces nothing (N300's open question 1) | both engine watcher arms, `every_fault_in_the_menu_is_observable`, and the daemon arm as a timeout |
+| `CameraState::returns` does not clear `gone` (N300's open question 1) | six arms, across `device_loss`, `sweep` and `faults` |
+
+The last two close the question N300's session report left open: both new fake mechanisms are
+non-vacuous, and the evidence is here rather than in a session note.
+
+**Two candidates were reported and refused.** The first was that coupling the loss to a hotplug
+removal inside the fake models a chain the real stack does not have. It does have it: a physical
+unplug is one cause with two effects — the driver refuses the next `DQBUF` with `ENODEV`, and the
+kernel broadcasts remove uevents this backend's netlink watch turns into `Removed` after a rescan.
+The coupling is right; its granularity, its replay and its latency were the defects, and they are
+§§4–6 above. The second was that two daemon subscription arms flake under load. They were watched
+here across repeated runs and the observed rate is reported in the session record rather than as a
+finding, because no baseline separates it from this batch.
+
+**One thing was dropped rather than fixed:** the prose count of `hw_gone_*` recipes. Three documents
+and this note's predecessor said "five", the tree held five, and nothing reconciled the number — so
+a sixth recipe or a deleted one would have left all four sentences green and wrong (N153, N158). The
+recipes are named where a partner rig needs to know them and counted nowhere.
+
+**Retires when:** nothing retires the shape, and the shape is the question this reading was worth
+running for: *when a contract is asserted in two places — a rig's recipe and its hermetic twin — do
+the two assert the same sentence?* Five of the six defects above are one answer of "no", in both
+directions: a twin stricter than the machine (the removal count), a recipe looser than the twin (the
+missing loss assertion), a twin and a recipe holding different constants, a double answering a
+different error kind than the backend it stands in for, and a search predicate that excluded the
+topology its own title named.

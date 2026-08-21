@@ -1218,6 +1218,105 @@ async fn a_subscription_outlives_the_session_it_watched_and_carries_the_next_one
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_camera_that_vanished_under_a_photo_tells_the_watchers_it_left() {
+    // **D19's watcher sentence, over the wire** — the clause that says a `subscribe_events`
+    // watcher gets the removal within the hotplug bounds. The engine twin
+    // (`engine/tests/device_loss.rs`) drives it against the backend seam; this drives it
+    // through `wch_subscribe_events`, because between the two there is a watch thread, a
+    // fan-out and a WebSocket, and a removal that stopped at any of them would leave an agent
+    // holding a stale listing with nothing to tell it otherwise (note **N300**).
+    //
+    // The loss arrives on the verb an agent actually runs: a photo, refused `DeviceGone`, on
+    // the camera whose node the notification then names.
+    let fixture = Fixture::start();
+    let ask = fixture.ask();
+    let vanishing = crate::fixture::camera(&fixture.cameras, 0).clone();
+
+    // Subscribed on its own connection, so the notification and the photo's answer are never
+    // two frames on one socket racing this test's reader.
+    let mut watching = open(&fixture, "ws", "wch_subscribe_events", buffer()).await;
+    let mut running = fixture.wchd.watch_hotplug();
+    running
+        .wait_for(|running| *running)
+        .await
+        .expect("the daemon publishes whether it is watching");
+
+    fixture.backend.queue_fault(Fault::DeviceGoneMidStream);
+    let mut connection = Ws::connect(&fixture.socket).await;
+    let request = schema::capture::PhotoRequest {
+        stream: schema::capture::StreamRequest::default(),
+        settle: schema::capture::SettlePolicy::default(),
+        transform: schema::capture::Transform::None,
+        sink: schema::capture::Sink::ReturnBytes {
+            format: schema::capture::PhotoFormat::Jpeg,
+        },
+        wait: false,
+    };
+    let refused = connection
+        .call(
+            "wch_photo",
+            json!({
+                "camera": &ask.camera,
+                "request": serde_json::to_value(&request).expect("a photo request serializes"),
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["code"],
+        json!(rpc_code(ErrorKind::DeviceGone)),
+        "a camera that vanished mid-stream answered something else: {refused}"
+    );
+
+    // The removals, on the subscription, naming every node that left. One per node, because
+    // that is what the kernel emits and what `v4l2::hotplug::Tracker::rescan` turns it into,
+    // and because a subscriber that heard about the capture node alone would still be holding
+    // a metadata node this machine no longer has (note **N301**). `Watching::next` ends when
+    // the daemon writes, so a build that produced no event turns into a named nextest TIMEOUT
+    // rather than a hang — the same bound every other delivery claim in this file runs under.
+    let mut told: Vec<HotplugEvent> = Vec::new();
+    for _ in &vanishing.nodes {
+        told.push(
+            watching
+                .next()
+                .await
+                .expect("a camera left and a watcher was told about fewer of its nodes"),
+        );
+    }
+    assert_eq!(
+        told,
+        vanishing
+            .nodes
+            .iter()
+            .map(|node| HotplugEvent::Removed {
+                path: node.path.clone()
+            })
+            .collect::<Vec<HotplugEvent>>(),
+        "the watcher was told about the wrong nodes, or the wrong direction: {told:?}"
+    );
+    assert!(
+        vanishing.nodes.len() > 1,
+        "the fixture camera owns one node, so 'one removal per node' is untested here"
+    );
+
+    // And the listing the watcher would re-read agrees with what it was told, which is the
+    // point of the event: one camera fewer, and the daemon still answering.
+    still_answers_about(
+        &mut connection,
+        &ask,
+        "after a camera vanished under a photo",
+        FIXTURE_CAMERAS - 1,
+    )
+    .await;
+    a_fresh_client_is_served_about(
+        &fixture,
+        &ask,
+        "after a camera vanished under a photo",
+        FIXTURE_CAMERAS - 1,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_session_that_ends_under_a_watcher_ends_only_the_session() {
     // **"A session that ends while somebody watches."** The whole of D8's arc — sweep,
     // select, apply, restore — run under an open subscription, so that what ends is a

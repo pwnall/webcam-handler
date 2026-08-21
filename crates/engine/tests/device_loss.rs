@@ -8,10 +8,23 @@
 //! thing that makes contributed evidence worth having is that the rig tests **this design's
 //! claim** rather than blessing whatever the code happens to do. So the claim is written here
 //! first, driven against the double, and the `hw_gone_*` recipes in
-//! `crates/backends/v4l2/tests/hardware.rs` are the same sentences waiting for a rig.
+//! `crates/backends/v4l2/tests/hardware.rs` are the same sentences waiting for a rig — **one
+//! `hw_gone_*` recipe per sentence**, which it was not until 2026-08-20: neither committed
+//! recipe opened a hotplug watch and nothing could re-attach, so two clauses had no producer
+//! on either side of the rig (notes **N299**, **N300**). The recipes are named rather than
+//! counted, here and in N299, because a count of code in prose is a claim something has to
+//! reconcile and nothing reconciles this one (N153, N158; note **N301**).
 //!
 //! Every arm below is one sentence of D19, and the sentences are spelled entirely in
 //! vocabulary that already existed: no API changed for this contract, and no error kind.
+//!
+//! **The sentence that is not here** is the preview's — the feed ending, the viewers'
+//! streams closing, the slot reaped rather than stranded. That is a claim about what the
+//! *daemon* does with the device's answer rather than about what the device does, so it is
+//! driven where the daemon is, by
+//! `a_device_that_failed_mid_take_reaches_the_collector_and_never_the_readers_as_a_success`,
+//! and the `g8` criterion's selection names that arm beside this binary so "every sentence"
+//! is a claim something reconciles rather than a prose count.
 
 use std::io::Read;
 
@@ -110,6 +123,20 @@ fn during_a_recording_the_take_finalizes_valid_to_the_last_frame_with_its_end_na
     // oracle), the ending names the device failure rather than a duration or a cap, and the
     // stream statistics are carried — the gap accounting right up to the loss is exactly the
     // measurement a forwarding rig is after (D16).
+    //
+    // **The ending is supplied here, and that is not the claim this arm makes about it.**
+    // `engine::record::run` chooses `RecordingEnd::DeviceFailed` itself and then *discards*
+    // the report, because a report answering a request that failed would be a `DeviceGone`
+    // reported as a successful recording (rule 7, notes **N115**, **N173**) — so no caller of
+    // the shipped composition can obtain the stats at all, and this arm is driven turn by turn
+    // to get at them. That the code and not a test picks the ending is asserted where the code
+    // picks it: `engine::record`'s own
+    // `a_device_that_vanished_mid_recording_leaves_an_indexed_file_and_the_devices_own_words`,
+    // and the daemon's
+    // `a_take_the_device_refused_is_collected_as_that_refusal_and_never_as_a_report`. Both are
+    // in this criterion's selection, so the pair is one claim rather than two files that could
+    // drift. D19's bullet was amended to say which caller holds the report, because it named
+    // `record_stop` and `record_stop` is the one caller that answers the refusal instead.
     let backend = machine();
     // A camera whose negotiated format an AVI can carry, chosen by asking the enumeration
     // rather than by naming a profile: the corpus holds a greyscale camera too, and a `.avi`
@@ -297,5 +324,373 @@ fn a_camera_that_did_not_vanish_is_untouched_by_one_that_did() {
             .iter()
             .any(|info| info.id == survivor),
         "the surviving camera left the listing with the lost one"
+    );
+}
+
+#[test]
+fn around_the_loss_a_watcher_is_told_the_removal_within_the_hotplug_bounds() {
+    // D19's fourth sentence, second clause — and until this arm existed it was the one part
+    // of the contract neither side of the rig could measure (note **N300**). The fake's loss
+    // and the fake's hotplug channel were unconnected: `DeviceGoneMidStream` answered a frame
+    // and touched no watch, while `HotplugEvent::Removed` came only from a separate scripted
+    // `Fault::HotplugRemove` naming whichever node the backend listed first. So a consumer
+    // that had been told to re-enumerate on a removal was never told anything by the event
+    // this design exists to describe.
+    //
+    // **The bound is the assertion and not a wait**, and it is
+    // `limits::HOTPLUG_MAX_DEFERRAL_MS` (note **N301**). That is the ceiling this project
+    // states on how long a hotplug reading may be deferred, so it is what D19's phrase "the
+    // hotplug bounds" names; `HOTPLUG_WATCH_DEADLINE_MS` is how long the daemon's loop parks
+    // per turn and its own doc says in bold that it is **not** a bound on delivery, so a
+    // twin asserted against it would hold a real stack delivering at 1.5 s to a sentence D19
+    // does not make. `HotplugWatch::next_event`'s contract is "block until an event or until
+    // this deadline", so a build that produced no removal answers `Ok(None)` at the end of it
+    // rather than hanging. Nothing here sleeps: the fake's watch is woken by the announcement
+    // itself.
+    let backend = machine();
+    let cameras = backend.enumerate().expect("enumerates");
+    let lost = cameras.first().expect("a camera").clone();
+    let nodes: Vec<camino::Utf8PathBuf> = lost.nodes.iter().map(|node| node.path.clone()).collect();
+
+    // Opened before the loss, because a watcher that subscribed afterwards would be asking
+    // about a machine that had already changed — and because that is the order a consumer of
+    // this daemon runs in.
+    let mut watch = backend.watch().expect("this backend gives out a watch");
+
+    let mut camera = backend.open_fake(&lost.id).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts");
+    backend.queue_fault(Fault::DeviceGoneMidStream);
+    let refused = camera
+        .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect_err("the device vanished");
+    assert_eq!(refused.kind(), ErrorKind::DeviceGone, "{refused}");
+
+    // **One removal per node the camera owned**, which is the shape the real tracker has:
+    // `v4l2::hotplug::Tracker::rescan` diffs the node tree and queues a `Removed` for every
+    // path that left it, and every profile in `corpus/` owns two nodes or four. A double that
+    // announced once for the camera would hand a node-level consumer a tree the machine never
+    // had, and the count was asserted the other way here until 2026-08-20 (note **N301**).
+    let bound = std::time::Duration::from_millis(schema::limits::HOTPLUG_MAX_DEFERRAL_MS);
+    let deadline = std::time::Instant::now() + bound;
+    let mut announced = Vec::new();
+    for _ in &nodes {
+        announced.push(
+            watch
+                .next_event(deadline)
+                .expect("the watch is working")
+                .expect(
+                    "a camera left the machine and the watch was told about fewer of its \
+                     nodes than left, inside the bound",
+                ),
+        );
+    }
+    assert_eq!(
+        announced,
+        nodes
+            .iter()
+            .map(|path| schema::backend::HotplugEvent::Removed { path: path.clone() })
+            .collect::<Vec<_>>(),
+        "the watcher was told about the wrong nodes, or the wrong direction"
+    );
+    assert!(
+        nodes.len() > 1,
+        "the first corpus camera owns one node, so 'one per node' is untested here: {nodes:?}"
+    );
+
+    // **And no more than that**, which is the inverse arm: a fake that announced on every
+    // refused frame would tell a consumer the camera left over and over, and a consumer that
+    // re-enumerated on each would be doing D19's work every time. The last read is given an
+    // already-spent deadline, so it answers immediately and the arm costs nothing.
+    let again = watch
+        .next_event(std::time::Instant::now())
+        .expect("the watch is still working");
+    assert_eq!(
+        again, None,
+        "one camera leaving announced more than one removal per node it owned: {again:?}"
+    );
+}
+
+#[test]
+fn a_watch_opened_after_the_loss_is_told_nothing_about_it() {
+    // **A watch reports what happened after it opened, and never what happened before**
+    // (note **N301**). The real watch is *primed* from the node tree when it opens —
+    // `v4l2::hotplug::Tracker::primed`'s own doc says "a watch on a machine that already has
+    // ten cameras does not announce ten arrivals" — so a node that was already absent when a
+    // subscriber arrived is never announced to it. A double whose event queue any later watch
+    // could drain would tell that subscriber about a departure that had already happened,
+    // which is a fake capability no real stack exhibits \[PF:17, note **N136**\].
+    //
+    // It is a sequence a real consumer meets rather than a curiosity: `daemon::events` runs
+    // its watch thread only while somebody is listening, so "the camera left while nobody was
+    // subscribed, then a subscriber arrived" is the ordinary shape of an agent reconnecting.
+    // The arm above is the other direction — a watch opened *before* the loss is told — so
+    // the two together say the priming is a cursor and not a mute.
+    let backend = machine();
+    let cameras = backend.enumerate().expect("enumerates");
+    let lost = cameras.first().expect("a camera").clone();
+
+    let mut camera = backend.open_fake(&lost.id).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts");
+    backend.queue_fault(Fault::DeviceGoneMidStream);
+    let refused = camera
+        .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect_err("the device vanished");
+    assert_eq!(refused.kind(), ErrorKind::DeviceGone, "{refused}");
+    drop(camera);
+
+    // Subscribed afterwards, and told nothing for the whole of a poll turn — the deadline the
+    // daemon's own watch thread hands in, which is the right bound for sitting through a
+    // quiet stretch even though it is the wrong one for a delivery claim.
+    let mut watch = backend.watch().expect("this backend gives out a watch");
+    let quiet = watch
+        .next_event(
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(schema::limits::HOTPLUG_WATCH_DEADLINE_MS),
+        )
+        .expect("the watch is working");
+    assert_eq!(
+        quiet, None,
+        "a watch opened after the camera left was told about a departure it could not have \
+         seen: {quiet:?}"
+    );
+
+    // And the listing is where that subscriber learns what it missed, which is the thing a
+    // real consumer does and the reason the silence is correct rather than a loss.
+    let after = backend.enumerate().expect("enumerates");
+    assert!(
+        after.iter().all(|other| other.id != lost.id),
+        "the camera that left is still in the listing"
+    );
+}
+
+#[test]
+fn a_camera_that_stayed_puts_nothing_on_the_watch() {
+    // The other half of the inverse, and the one that stops the arm above from passing on a
+    // fake that announces a removal whenever anybody opens a watch: a machine where nothing
+    // left says nothing, for the whole of the same bound.
+    let backend = machine();
+    let mut watch = backend.watch().expect("this backend gives out a watch");
+    let selector = first(&backend);
+    let CameraSelector::Id(present) = selector else {
+        panic!("the fixture built something other than an id");
+    };
+    let mut camera = backend.open_fake(&present).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts");
+    camera
+        .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect("a frame from a camera that is still here");
+
+    let bound = std::time::Duration::from_millis(schema::limits::HOTPLUG_WATCH_DEADLINE_MS);
+    let quiet = watch
+        .next_event(std::time::Instant::now() + bound)
+        .expect("the watch is working");
+    assert_eq!(
+        quiet, None,
+        "a machine nothing left from announced something: {quiet:?}"
+    );
+}
+
+/// What a capture stamps around it: this test, on this host, this minute.
+///
+/// The backend is named `Fake` because it is, which is the field that stops a document taken
+/// here from ever being mistaken for corpus.
+fn capture_context() -> engine::profile::CaptureContext {
+    engine::profile::CaptureContext {
+        captured_at: Stamp::epoch(),
+        kernel: "hermetic".to_owned(),
+        tool_version: env!("CARGO_PKG_VERSION").to_owned(),
+        capturer: "device_loss.rs".to_owned(),
+        backend: schema::backend::BackendKind::Fake,
+    }
+}
+
+#[test]
+fn a_later_return_is_a_new_arrival_whose_fingerprint_says_it_is_the_same_device() {
+    // D19's last sentence, and the one the tree could not express at all until the fake grew
+    // a way for a camera to come back (note **N300**): `gone` was set once and never cleared,
+    // so "a later return" had no producer on either side of the rig.
+    //
+    // The claim is D14 and D15's split doing its job, so it is asserted through D15's own
+    // projection rather than by reading fields: two profiles captured by the shipped capture
+    // path, one before the loss and one after the return, compared with identity held to one
+    // side. **Same device, different address** — the whole sentence, in the vocabulary the
+    // design says carries it.
+    let backend = machine();
+    let cameras = backend.enumerate().expect("enumerates");
+    let lost = cameras.first().expect("a camera").clone();
+
+    let before = {
+        let mut camera = backend.open_fake(&lost.id).expect("opens");
+        engine::profile::capture(&mut camera, &capture_context())
+            .expect("the camera describes itself")
+    };
+    let paths_before: Vec<camino::Utf8PathBuf> =
+        lost.nodes.iter().map(|node| node.path.clone()).collect();
+
+    let mut watch = backend.watch().expect("this backend gives out a watch");
+    let mut camera = backend.open_fake(&lost.id).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts");
+    backend.queue_fault(Fault::DeviceGoneMidStream);
+    camera
+        .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect_err("the device vanished");
+    drop(camera);
+    // The removals, read off so that what the return puts on the watch is the next event and
+    // not a previous one — one per node the camera owned, which is what the arm above holds
+    // the loss to.
+    for _ in &lost.nodes {
+        watch
+            .next_event(std::time::Instant::now())
+            .expect("the watch is working")
+            .expect("the loss announced fewer removals than the camera had nodes");
+    }
+
+    // Somewhere else on the same machine. The address is stated rather than derived: the rig
+    // picks the port it re-attaches on, and this test is standing in for the rig.
+    let returned = backend
+        .device_returns(
+            &lost.id,
+            &fake::Reattachment::At {
+                bus_path: "9-9:1.0".to_owned(),
+                bus_info: "usb-0000:00:14.0-9".to_owned(),
+                first_node: 90,
+            },
+        )
+        .expect("a camera that vanished can come back");
+
+    // **A new arrival**, on the watch, naming every node it came back on — the mirror of the
+    // departure, and one event per node for the same reason (note **N301**).
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_millis(schema::limits::HOTPLUG_MAX_DEFERRAL_MS);
+    let mut announced = Vec::new();
+    for _ in &returned.nodes {
+        announced.push(
+            watch
+                .next_event(deadline)
+                .expect("the watch is working")
+                .expect("a camera arrived and the watch was told about fewer of its nodes"),
+        );
+    }
+    assert_eq!(
+        announced,
+        returned
+            .nodes
+            .iter()
+            .map(|node| schema::backend::HotplugEvent::Added {
+                path: node.path.clone()
+            })
+            .collect::<Vec<_>>(),
+        "the arrival named the wrong nodes, or the wrong direction"
+    );
+    let again = watch
+        .next_event(std::time::Instant::now())
+        .expect("the watch is still working");
+    assert_eq!(
+        again, None,
+        "one camera arriving announced more than one arrival per node: {again:?}"
+    );
+
+    // The listing has it again, and resolution finds it under the id a consumer was holding —
+    // which is D1's rule rather than a shortcut: an id is derived from card names, and the
+    // card name did not move.
+    let after_listing = backend.enumerate().expect("enumerates");
+    assert_eq!(
+        after_listing.len(),
+        cameras.len(),
+        "the machine came back a different size: {after_listing:#?}"
+    );
+    let resolved = engine::resolve::camera(&after_listing, &CameraSelector::Id(lost.id.clone()))
+        .expect("the id a consumer was holding names the camera that came back");
+    assert_eq!(resolved.id, lost.id);
+
+    // And D15's answer: the description did not move, the address did.
+    let after = {
+        let mut camera = backend
+            .open_fake(&lost.id)
+            .expect("it opens at its new address");
+        engine::profile::capture(&mut camera, &capture_context())
+            .expect("the camera describes itself")
+    };
+    let comparison = before.compare(&after);
+    assert!(
+        comparison.device_matches(),
+        "a camera that came back described itself as a different device: {comparison}"
+    );
+    assert_eq!(
+        comparison.identity,
+        vec!["fingerprint.bus_path".to_owned(), "bus_info".to_owned()],
+        "the identity half did not name the address, or named more than the address: {comparison}"
+    );
+
+    // Every node path moved and the comparison named none of them, which is PF:22 and not an
+    // omission: node numbering is probe-order bookkeeping, and a comparison that called it a
+    // difference would report a moved camera every time a driver reloaded.
+    let paths_after: Vec<camino::Utf8PathBuf> = returned
+        .nodes
+        .iter()
+        .map(|node| node.path.clone())
+        .collect();
+    assert_eq!(paths_after.len(), paths_before.len());
+    assert!(
+        paths_before
+            .iter()
+            .zip(paths_after.iter())
+            .all(|(was, now)| was != now),
+        "the fixture did not move the node paths, so PF:22's exclusion is untested here: \
+         {paths_before:?} against {paths_after:?}"
+    );
+}
+
+#[test]
+fn a_camera_that_came_back_where_it_was_moved_no_identity_at_all() {
+    // The inverse of the arm above, and what stops it passing on a build that reports an
+    // identity delta for any two captures: the same loss, the same return, into the socket the
+    // camera came out of — and D15 finds nothing to say. It is also the case an operator
+    // actually produces, and the one that leaves a session store's fingerprint-keyed directory
+    // where it was.
+    let backend = machine();
+    let lost = backend
+        .enumerate()
+        .expect("enumerates")
+        .first()
+        .expect("a camera")
+        .clone();
+    let before = {
+        let mut camera = backend.open_fake(&lost.id).expect("opens");
+        engine::profile::capture(&mut camera, &capture_context())
+            .expect("the camera describes itself")
+    };
+
+    let mut camera = backend.open_fake(&lost.id).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts");
+    backend.queue_fault(Fault::DeviceGoneMidStream);
+    camera
+        .next_frame(std::time::Instant::now() + std::time::Duration::from_secs(1))
+        .expect_err("the device vanished");
+    drop(camera);
+    backend
+        .device_returns(&lost.id, &fake::Reattachment::WhereItWas)
+        .expect("a camera that vanished can come back");
+
+    let after = {
+        let mut camera = backend.open_fake(&lost.id).expect("opens");
+        engine::profile::capture(&mut camera, &capture_context())
+            .expect("the camera describes itself")
+    };
+    let comparison = before.compare(&after);
+    assert!(comparison.device_matches(), "{comparison}");
+    assert!(
+        comparison.identity.is_empty(),
+        "a camera that came back where it was reported an address change: {comparison}"
     );
 }

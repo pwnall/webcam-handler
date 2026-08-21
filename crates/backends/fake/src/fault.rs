@@ -14,7 +14,7 @@
 //!
 //! | Fault | Lasts | Observed by |
 //! |---|---|---|
-//! | [`Fault::DeviceGoneMidStream`] | one shot | `next_frame` → [`schema::Error::DeviceGone`], stream torn down |
+//! | [`Fault::DeviceGoneMidStream`] | one shot | `next_frame` → [`schema::Error::DeviceGone`], stream torn down, the camera out of `enumerate` and refusing every further call on the handle, and one [`schema::backend::HotplugEvent::Removed`] per node it owned on every watch open at the time |
 //! | [`Fault::Busy`] | one shot | `open` → [`schema::Error::Busy`] |
 //! | [`Fault::ClampOnWrite`] | one shot | `set` moves an in-range write to the maximum, reported as [`schema::control::WriteWarning::Adjusted`] \[PF:6\] |
 //! | [`Fault::InactiveFlip`] | one shot | `controls` reports every measured manual partner's INACTIVE bit toggled \[PF:3\] |
@@ -45,7 +45,34 @@ closed_vocabulary! {
     /// The menu is design §2.9's row for the T1/T2 seam, variant for variant.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub enum Fault {
-        /// The device disappears while a stream is running.
+        /// The device disappears while a stream is running (design D19).
+        ///
+        /// The whole of the loss and not one refused call: the frame in flight is answered
+        /// [`schema::Error::DeviceGone`], the stream is torn down, the camera leaves
+        /// `enumerate`, every further call on the *handle* answers `DeviceGone` the way a node
+        /// whose device left answers `ENODEV` — while asking the backend for the camera again
+        /// is a listing miss and answers [`schema::Error::CameraUnknown`], which is what
+        /// `V4l2Backend::open` answers for an id its `enumerate` does not name — and the
+        /// machine announces one [`schema::backend::HotplugEvent::Removed`] per node the
+        /// camera owned, which is what lets D19's watcher sentence be driven at all.
+        /// [`crate::FakeBackend::device_returns`] is the other end of it.
+        ///
+        /// **Every watch open at the time is told, and a watch opened afterwards is not**, the
+        /// way `v4l2::hotplug::Tracker::primed` reads the node tree when it opens: a
+        /// subscriber that arrives after a device left hears nothing about it, on this double
+        /// as on the machine (note **N301**).
+        ///
+        /// **What the fake claims here is `declared`, and this is the one fault in the menu
+        /// for which that word is the whole point** (design §2.12's D19 clarification; E5).
+        /// Every other member of this menu resembles something somebody measured: PF:6's
+        /// clamp, PF:3's INACTIVE flip, the `EBUSY` a driver answers a `G_EXT_CTRLS` with.
+        /// Nothing on this rig has ever produced a mid-stream device loss — the privileged
+        /// helper refuses to unload `uvcvideo` under an open node (§2.13), by design — so the
+        /// shape above is **this design's stated contract replayed back**, not a transcript.
+        /// It stays `declared` until a rig that can arrange the event contributes the
+        /// measurement, at which point a disagreement is a PF entry and an amendment to this
+        /// variant the same day, not an argument. The protocol that says what such a
+        /// contribution must carry is note **N299**.
         DeviceGoneMidStream,
         /// Another process holds the device.
         Busy,

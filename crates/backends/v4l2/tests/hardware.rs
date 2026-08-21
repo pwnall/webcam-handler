@@ -294,11 +294,153 @@ fn hw_controls_enumerate_on_every_node_without_panicking() {
 /// Design D19 records mid-stream loss on real hardware as unmeasured **by design**: the
 /// privileged helper refuses to unload `uvcvideo` under an open node (§2.13), so on this host
 /// the event exists only as the fake's scripted fault. A sibling project can produce the real
-/// one reproducibly — drop the tunnel, detach the vhci port — and these two recipes are what
-/// it runs. The protocol is one variable holding a command line that makes the camera under
+/// one reproducibly — drop the tunnel, detach the vhci port — and the `hw_gone_*` recipes
+/// below are what it runs (named rather than counted: a count of code in prose is a claim
+/// something reconciles, and nothing reconciles this one — N153, N158, note **N301**). This variable holds a command line that makes the camera under
 /// test disappear *while a stream is open*; the recipes run it, then assert this design's
-/// stated contract against what the driver does.
+/// stated contract against what the driver does. What a contributed E-entry must carry — the
+/// rig named, the transcripts kept, the declines left in — is note **N299**.
 const LOSS_COMMAND: &str = "WCH_DEVICE_LOSS";
+
+/// The environment variable a rig that can put the camera **back** sets.
+///
+/// The second half of D19's last sentence — "a later return is a new arrival whose
+/// fingerprint tells the consumer it is the same device on a different address" — needs a rig
+/// that can re-attach as well as detach, and re-attaching is a separate act with a separate
+/// command line. A rig that can only detach sets one variable and declines the return recipe
+/// by name, which is why this is not one variable holding two commands. The protocol both
+/// variables belong to is note **N299**.
+const RETURN_COMMAND: &str = "WCH_DEVICE_RETURN";
+
+/// The command that puts the camera back, or a counted skip naming what is missing.
+fn arrangeable_return() -> Option<String> {
+    match std::env::var(RETURN_COMMAND) {
+        Ok(command) if !command.trim().is_empty() => Some(command),
+        _ => {
+            println!(
+                "SKIP: needs a rig that can re-attach the camera under test; set \
+                 {RETURN_COMMAND} to a command that brings it back (design D19 — the partner \
+                 rig re-attaches the vhci port it dropped)"
+            );
+            None
+        }
+    }
+}
+
+/// The environment variable a rig sets to say **which** camera the loss recipes act on.
+///
+/// Without it these recipes take whatever this tool's enumeration puts first, and a rig whose
+/// host has more than one camera — this project's own has three — has no way to know which one
+/// its `WCH_DEVICE_LOSS` command must target. A rig that detaches the wrong device then gets a
+/// red recipe with nothing to tell it apart from a real contract breach (note **N301**). Any
+/// spelling D14 reads is accepted, because it goes through the one parser and the one
+/// resolver: an id or its prefix, a `/dev` node path, `bus:`, `usb:`, `serial:`.
+const UNDER_TEST: &str = "WCH_DEVICE_UNDER_TEST";
+
+/// The camera the `hw_gone_*` recipes act on, named in the transcript before anything moves.
+///
+/// Printed on every path, including the default one, because the transcript is the evidence a
+/// contributed E-entry carries (note **N299**) and "which camera did it choose" is the fact
+/// that makes a red arm readable. When [`UNDER_TEST`] names a camera this listing does not
+/// have, that is a decline naming the variable rather than a silent retarget onto whichever
+/// camera is left — and the commonest reason for it is an earlier recipe that detached this
+/// one, which is a different thing from a host with no cameras.
+fn camera_under_test(cameras: &[schema::camera::CameraInfo]) -> Option<schema::camera::CameraInfo> {
+    let chosen = match std::env::var(UNDER_TEST) {
+        Ok(spelling) if !spelling.trim().is_empty() => {
+            let selector = match schema::selector::parse(spelling.trim()) {
+                Ok(selector) => selector,
+                Err(error) => {
+                    println!("SKIP: {UNDER_TEST} is not a spelling this tool reads: {error}");
+                    return None;
+                }
+            };
+            match engine::resolve::camera(cameras, &selector) {
+                Ok(info) => info.clone(),
+                Err(error) => {
+                    println!(
+                        "SKIP: {UNDER_TEST} names no camera in this host's listing right now \
+                         — an earlier hw_gone_* recipe may have left it detached, which is not \
+                         the same as this host having no cameras: {error}"
+                    );
+                    return None;
+                }
+            }
+        }
+        _ => cameras.first()?.clone(),
+    };
+    let nodes: Vec<&str> = chosen.nodes.iter().map(|node| node.path.as_str()).collect();
+    println!(
+        "the camera under test is {} at bus {} on {} (set {UNDER_TEST} to choose another)",
+        chosen.id,
+        chosen.fingerprint.bus_path,
+        nodes.join(", ")
+    );
+    Some(chosen)
+}
+
+/// Puts the camera back when a recipe that took it away ends, however it ends.
+///
+/// AGENTS rule 8 — leave the camera as you found it, and `Drop`-guard the mid-arm exits. A
+/// recipe that arranges a loss and returns leaves the machine one camera short, so every
+/// recipe scheduled after it on a single-camera rig declines with "no camera is attached to
+/// this host", which reads as a fact about the host rather than as the consequence of an
+/// earlier arm (note **N301**).
+///
+/// It never asserts and never panics: a `Drop` that panicked while a recipe was already
+/// unwinding would abort the process and take the transcript with it. What it does instead is
+/// *say* what it did, so a run that left the machine changed says so in the evidence.
+struct PutItBack {
+    command: Option<String>,
+    armed: bool,
+}
+
+impl PutItBack {
+    /// Arm the guard from the rig's own variable, whether or not the rig set one.
+    fn arranged() -> PutItBack {
+        PutItBack {
+            command: std::env::var(RETURN_COMMAND)
+                .ok()
+                .filter(|command| !command.trim().is_empty()),
+            armed: true,
+        }
+    }
+
+    /// The recipe put the camera back itself, so this guard has nothing left to do.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PutItBack {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(command) = self.command.clone() else {
+            println!(
+                "NOTE: this recipe left the camera under test detached, because {RETURN_COMMAND} \
+                 is not set. Every later recipe in this run will decline for want of a camera. \
+                 Set it, or run one hw_gone_* recipe per invocation (note N299)."
+            );
+            return;
+        };
+        println!("putting the camera back with: {command}");
+        match Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+        {
+            Ok(status) if status.success() => println!("the camera was put back"),
+            Ok(status) => {
+                println!("NOTE: {RETURN_COMMAND} exited {status}; the machine is left changed")
+            }
+            Err(error) => println!("NOTE: {RETURN_COMMAND} could not be run: {error}"),
+        }
+    }
+}
 
 /// The command that arranges a loss, or a counted skip naming what is missing.
 ///
@@ -343,15 +485,15 @@ fn hw_gone_a_photo_answers_device_gone_and_not_a_deadline() {
     let Some((backend, cameras)) = attached() else {
         return;
     };
-    let info = cameras
-        .first()
-        .expect("attached() refuses an empty listing")
-        .clone();
+    let Some(info) = camera_under_test(&cameras) else {
+        return;
+    };
     let mut camera = backend.open(&info.id).expect("opens");
     camera
         .start_stream(&schema::capture::StreamRequest::default())
         .expect("starts a stream");
 
+    let _put_it_back = PutItBack::arranged();
     let status = arrange_the_loss(&command);
     assert!(status.success(), "{LOSS_COMMAND} exited {status}");
 
@@ -387,15 +529,15 @@ fn hw_gone_the_listing_stops_naming_the_camera_that_left() {
     let Some((backend, before)) = attached() else {
         return;
     };
-    let info = before
-        .first()
-        .expect("attached() refuses an empty listing")
-        .clone();
+    let Some(info) = camera_under_test(&before) else {
+        return;
+    };
     let mut camera = backend.open(&info.id).expect("opens");
     camera
         .start_stream(&schema::capture::StreamRequest::default())
         .expect("starts a stream");
 
+    let _put_it_back = PutItBack::arranged();
     let status = arrange_the_loss(&command);
     assert!(status.success(), "{LOSS_COMMAND} exited {status}");
     let _ = camera.next_frame(std::time::Instant::now() + std::time::Duration::from_secs(5));
@@ -417,6 +559,389 @@ fn hw_gone_the_listing_stops_naming_the_camera_that_left() {
         before.len() - 1,
         "detaching one camera changed the listing by more than one camera"
     );
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_gone_a_watcher_is_told_the_camera_left() {
+    // D19's fourth sentence, second clause: **a `subscribe_events` watcher gets the removal
+    // within the hotplug bounds.** The hermetic twin drives this against the fake's own
+    // machine (`engine/tests/device_loss.rs`); here the producer is the kernel's uevent and
+    // the reader is this backend's netlink watch, which is the half no double can stand in
+    // for — the driver does not emit the uevent, the kernel does, and whether one arrives at
+    // all for a device that left under an open stream is exactly what this design has stated
+    // and never measured (note **N300**).
+    //
+    // The bound is the assertion: the deadline handed to `next_event` is three times
+    // `limits::HOTPLUG_MAX_DEFERRAL_MS`, and a removal that did not arrive inside it is a red
+    // arm rather than a hang. The constant is what D19's phrase "the hotplug bounds" names —
+    // the ceiling this backend's own debounce may hold a reading for — and the hermetic twin
+    // asserts the bare constant, because there the announcement is the wake. Three times it
+    // here, which is this file's standing idiom for a hotplug arm (the `uvcvideo` cycle arm
+    // uses the same multiple): between the unplug and this process there is a kernel uevent,
+    // a socket, a debounce and a scheduler this rung does not control, and the recipe is
+    // measuring whether the removal arrives at all rather than racing it (note **N301**).
+    let Some(command) = arrangeable_loss() else {
+        return;
+    };
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+    let Some(info) = camera_under_test(&cameras) else {
+        return;
+    };
+    let nodes: BTreeSet<Utf8PathBuf> = info.nodes.iter().map(|node| node.path.clone()).collect();
+
+    // Opened before the loss, because a watch subscribed afterwards would be asking about a
+    // machine that had already changed — and because that is the order a consumer runs in.
+    let mut watch = backend
+        .watch()
+        .expect("this host gives out a hotplug watch");
+    let mut camera = backend.open(&info.id).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts a stream");
+
+    let _put_it_back = PutItBack::arranged();
+    let status = arrange_the_loss(&command);
+    assert!(status.success(), "{LOSS_COMMAND} exited {status}");
+    let refused = camera
+        .next_frame(Instant::now() + Duration::from_secs(5))
+        .expect_err("the camera was detached and still delivered a frame");
+    assert_eq!(
+        refused.kind(),
+        schema::ErrorKind::DeviceGone,
+        "{LOSS_COMMAND} ran and the driver still had a device: {refused}"
+    );
+    drop(camera);
+
+    // Every event inside the bound, printed, because a rig's transcript is the evidence and
+    // "which nodes the kernel announced" is a fact this project has never recorded.
+    let deadline = Instant::now() + Duration::from_millis(limits::HOTPLUG_MAX_DEFERRAL_MS * 3);
+    let mut removed: BTreeSet<Utf8PathBuf> = BTreeSet::new();
+    while Instant::now() < deadline {
+        match watch.next_event(deadline) {
+            Ok(Some(event)) => {
+                println!("the watch delivered: {event:?}");
+                if let HotplugEvent::Removed { path } = event {
+                    removed.insert(path);
+                }
+            }
+            Ok(None) => break,
+            Err(error) => panic!("the watch stopped while a camera was leaving: {error}"),
+        }
+    }
+    assert!(
+        !removed.is_disjoint(&nodes),
+        "D19 says a watcher is told the camera left; this host announced {removed:?} for a \
+         camera whose nodes are {nodes:?}"
+    );
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_gone_a_take_finalizes_valid_to_its_last_frame_with_its_end_named() {
+    // D19's second sentence, on real hardware: **the take finalizes** — a valid AVI up to the
+    // last complete frame, an end that names the device failure, and the gap accounting right
+    // up to the loss, which D19 calls the rig's streaming-fidelity measurement (D16).
+    //
+    // Driven turn by turn, which is the shape the daemon records in and the only shape in
+    // which the sentence is expressible: the loss has to arrive *between* frames rather than
+    // instead of the first one. What only a rig can establish is the first half — that a
+    // device leaving under an open stream refuses the next `DQBUF` rather than blocking until
+    // somebody's deadline — because everything after the refusal is this build's muxer, which
+    // the hermetic twin already drives.
+    let Some(command) = arrangeable_loss() else {
+        return;
+    };
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+    let Some(info) = camera_under_test(&cameras) else {
+        return;
+    };
+    let scratch = engine::paths::scratch_dir().expect("a scratch directory");
+    let path = Utf8PathBuf::from_path_buf(scratch.path().join("hw-interrupted.avi"))
+        .expect("a UTF-8 scratch path");
+
+    let mut camera = backend.open(&info.id).expect("opens");
+    let request = schema::video::RecordRequest {
+        stream: StreamRequest::default(),
+        duration_ms: Some(60_000),
+        sink: schema::capture::Sink::ServerPath { path: path.clone() },
+        wait: false,
+    };
+    let clock = engine::settle::MonotonicClock::new();
+    let opened = engine::record::start(&mut *camera, &request).expect("the stream starts");
+    let mut recording = engine::record::Recording::begin(
+        &opened,
+        &path,
+        &mut engine::record::OnDisk,
+        &clock,
+        schema::time::Stamp::epoch(),
+    )
+    .expect("the file opens");
+
+    let mut written = 0_u32;
+    while written < 4 {
+        match engine::record::turn(&mut *camera).expect("the camera is delivering") {
+            engine::record::Turn::Frame(frame) => {
+                recording.write(&frame).expect("the frame is written");
+                written = written.saturating_add(1);
+            }
+            engine::record::Turn::Idle => {}
+        }
+    }
+
+    let _put_it_back = PutItBack::arranged();
+    let status = arrange_the_loss(&command);
+    assert!(status.success(), "{LOSS_COMMAND} exited {status}");
+    // **Bounded, because a loss that did not happen is a red arm and not a hang** (note
+    // **N301**). This loop used to break only on `Err`, so a `WCH_DEVICE_LOSS` command that
+    // exited zero and detached nothing turned the recipe into a spin that nextest's
+    // `terminate-after` ended — a timeout naming no sentence, on the rung whose whole output
+    // is evidence. The budget is the driver's own delivery bound many times over: a camera
+    // that is still here keeps handing over frames, so the assertion names the variable whose
+    // command did not do what the protocol says it must.
+    let give_up = Instant::now() + Duration::from_millis(limits::HOTPLUG_MAX_DEFERRAL_MS * 3);
+    let refused = loop {
+        assert!(
+            Instant::now() < give_up,
+            "{LOSS_COMMAND} exited 0 and the camera went on delivering frames; the take under \
+             it never lost its device"
+        );
+        match engine::record::turn(&mut *camera) {
+            Ok(engine::record::Turn::Frame(frame)) => {
+                recording.write(&frame).expect("the frame is written");
+                written = written.saturating_add(1);
+            }
+            Ok(engine::record::Turn::Idle) => {}
+            Err(refused) => break refused,
+        }
+    };
+    println!("the driver ended the take with: {refused} after {written} frame(s)");
+    assert_eq!(
+        refused.kind(),
+        schema::ErrorKind::DeviceGone,
+        "D19 says a take that lost its device ends on DeviceGone; this driver said {refused}"
+    );
+
+    let report = recording
+        .finish(schema::video::RecordingEnd::DeviceFailed, &clock)
+        .expect("the container closes over what arrived");
+    assert_eq!(report.ended, schema::video::RecordingEnd::DeviceFailed);
+    assert_eq!(report.summary.frames_written, written);
+    println!(
+        "the take carried {} delivered, {} dropped",
+        report.stats.frames_delivered, report.stats.frames_dropped
+    );
+
+    // And the file is a file, read by the re-parser P6a wrote from the specification before
+    // the muxer existed.
+    let bytes = std::fs::read(path.as_std_path()).expect("the interrupted take left a file");
+    let stream = imaging::avi::read::read_stream(&bytes)
+        .expect("the independent re-parser reads the interrupted file");
+    assert_eq!(
+        u32::try_from(stream.frames.len()).unwrap_or(u32::MAX),
+        written,
+        "the file holds a different number of frames than the report claims"
+    );
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_gone_a_return_is_a_new_arrival_whose_fingerprint_says_it_is_the_same_device() {
+    // D19's last sentence, which needs a rig that can re-attach: **a later return is a new
+    // arrival whose fingerprint tells the consumer it is the same device on a different
+    // address (D14/D15's split doing its job).**
+    //
+    // Asserted through D15's own projection rather than by reading fields: a profile captured
+    // before the loss and one captured after the return, compared with identity held to one
+    // side. The device half must be empty — the same camera describes itself the same way —
+    // and the identity half is where a moved address shows up. **Both outcomes are recorded
+    // rather than one asserted**: a rig that re-attaches on the same port legitimately moves
+    // nothing, and calling that a failure would be this recipe demanding a topology.
+    //
+    // What this recipe can go red on is the part D19 actually promises: the camera is back in
+    // the listing, and its *description* did not change while it was away.
+    let Some(loss) = arrangeable_loss() else {
+        return;
+    };
+    let Some(returns) = arrangeable_return() else {
+        return;
+    };
+    let Some((backend, before_listing)) = attached() else {
+        return;
+    };
+    let Some(info) = camera_under_test(&before_listing) else {
+        return;
+    };
+    let context = engine::profile::CaptureContext {
+        captured_at: schema::time::Stamp::epoch(),
+        kernel: "unrecorded".to_owned(),
+        tool_version: schema::TOOL_VERSION.to_owned(),
+        capturer: "hw_gone_a_return_is_a_new_arrival".to_owned(),
+        backend: schema::backend::BackendKind::V4l2,
+    };
+    let before = {
+        let mut camera = backend.open(&info.id).expect("opens");
+        engine::profile::capture(&mut *camera, &context).expect("the camera describes itself")
+    };
+
+    let mut put_it_back = PutItBack::arranged();
+    let mut camera = backend.open(&info.id).expect("opens");
+    camera
+        .start_stream(&StreamRequest::default())
+        .expect("starts a stream");
+    let status = arrange_the_loss(&loss);
+    assert!(status.success(), "{LOSS_COMMAND} exited {status}");
+
+    // **The loss is a claim before the return is attempted** (note **N301**). This recipe
+    // threw the frame away — `let _ = camera.next_frame(..)` — and then went looking for a
+    // camera that had never left, so a `WCH_DEVICE_LOSS` command that exited zero and
+    // detached nothing produced a green D19 measurement and a transcript that looked exactly
+    // like a real one. A rig's command not doing what the protocol says it must is a red arm
+    // naming that variable, not a pass.
+    let refused = camera
+        .next_frame(Instant::now() + Duration::from_secs(5))
+        .expect_err("the camera was detached and still delivered a frame");
+    assert_eq!(
+        refused.kind(),
+        schema::ErrorKind::DeviceGone,
+        "{LOSS_COMMAND} ran and the driver still had a device: {refused}"
+    );
+    drop(camera);
+
+    // And the listing agrees, which is D19's fourth sentence and the state the return has to
+    // start from. Waited for rather than read once, because the node tree is the kernel's to
+    // update and this rung does not control when it does.
+    let gone_by = Instant::now() + Duration::from_millis(limits::HOTPLUG_MAX_DEFERRAL_MS * 3);
+    loop {
+        let listing = backend.enumerate().expect("the machine still enumerates");
+        if listing.iter().all(|other| other.id != info.id) {
+            break;
+        }
+        assert!(
+            Instant::now() < gone_by,
+            "{LOSS_COMMAND} exited 0 and {} is still in the listing, so there is nothing for \
+             {RETURN_COMMAND} to bring back",
+            info.id
+        );
+    }
+
+    println!("putting the camera back with: {returns}");
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(&returns)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .unwrap_or_else(|err| panic!("{RETURN_COMMAND} could not be run: {err}"));
+    assert!(status.success(), "{RETURN_COMMAND} exited {status}");
+    // Run, so the guard has nothing left to do — and disarmed here rather than at the end of
+    // the recipe, so a failure after this point does not detach-and-reattach a second time.
+    put_it_back.disarm();
+
+    // The listing, waited for on the same bound the removal gets: enumeration is what a
+    // consumer re-reads, and a device that is back but not yet enumerable is a device this
+    // rung must give the kernel time to finish attaching.
+    //
+    // **Found by its description and not by its whole fingerprint** (note **N301**).
+    // `CameraFingerprint::matches` compares `bus_path` too — it is "the same camera at the
+    // same address" — so a device re-attached on another vhci port never matched, this loop
+    // never broke, and the recipe died on the deadline below blaming the rig for a device
+    // that had come back. That is the one topology this recipe exists to measure, so the
+    // lookup is D15's split instead: the address may have moved and nothing else may have.
+    // The `CameraId` is not the lookup either, for the reason `CameraInfo::differing_fields`
+    // gives — an id is handed out from the card names of everything attached at enumeration
+    // time, so the camera that just left can change another camera's id.
+    let deadline = Instant::now() + Duration::from_millis(limits::HOTPLUG_MAX_DEFERRAL_MS * 3);
+    let back = loop {
+        let listing = backend.enumerate().expect("the machine still enumerates");
+        if let Some(back) = listing.iter().find(|other| {
+            other
+                .fingerprint
+                .describes_the_same_device(&info.fingerprint)
+        }) {
+            break back.clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the camera did not come back inside the hotplug bounds after {RETURN_COMMAND}"
+        );
+    };
+    println!(
+        "it left {} and came back {}",
+        info.fingerprint.bus_path, back.fingerprint.bus_path
+    );
+
+    let after = {
+        let mut camera = backend.open(&back.id).expect("it opens at its new address");
+        engine::profile::capture(&mut *camera, &context).expect("the camera describes itself")
+    };
+    let comparison = before.compare(&after);
+    println!("D15 says: {comparison}");
+    assert!(
+        comparison.device_matches() || comparison.device_differs_only_in_the_format_tree(),
+        "a camera that came back described itself as a different device: {comparison}"
+    );
+    println!(
+        "the identity half named: {}",
+        if comparison.identity.is_empty() {
+            "nothing — this rig re-attached at the same address".to_owned()
+        } else {
+            comparison.identity.join(", ")
+        }
+    );
+}
+
+#[test]
+#[ignore = "R3: needs a camera attached; run with `just smoke-hw`"]
+fn hw_open_answers_camera_unknown_for_an_id_this_listing_does_not_name() {
+    // **The real backend's half of a contract the fake used to answer differently** (D13's
+    // registry; note **N301**). `V4l2Backend::open` resolves through its own `enumerate()`, so
+    // an id the listing does not name is `CameraUnknown` — and a camera that vanished
+    // mid-stream is exactly such an id, because D19's fourth sentence is that the listing
+    // stops naming it. The fake answered `DeviceGone` for that same situation until
+    // 2026-08-20, which is one machine event with two D13 kinds, two wire codes, two exit
+    // codes and two different things an unattended agent does next.
+    //
+    // The claim lives in `testkit::battery::arm_enumeration`, which is where both backends
+    // inherit it — but `battery::run` has no real-backend caller in any hermetic suite
+    // (note **N298**), so this rung is where the real side of it is actually walked. Nothing
+    // here detaches anything: what is being asked is what `open` says about an id the listing
+    // does not carry, and a well-formed id nobody has is the same question without the
+    // arrangement.
+    let Some((backend, cameras)) = attached() else {
+        return;
+    };
+    let listed: BTreeSet<schema::CameraId> = cameras.iter().map(|info| info.id.clone()).collect();
+    let absent = listed
+        .iter()
+        .filter_map(|id| schema::CameraId::parse(&format!("{}-not-on-this-machine", id.body())))
+        .find(|candidate| !listed.contains(candidate))
+        .expect("a well-formed id this host does not have");
+
+    let refused = backend
+        .open(&absent)
+        .err()
+        .unwrap_or_else(|| panic!("{absent} opened on a host whose listing does not name it"));
+    println!("the real backend answered: {refused}");
+    assert_eq!(
+        refused.kind(),
+        schema::ErrorKind::CameraUnknown,
+        "an id this listing does not name is CameraUnknown on every backend; this one said \
+         {refused}"
+    );
+    // And the other direction, without which the arm above passes on a backend that refuses
+    // every open: the ids the listing *does* name open.
+    let first = cameras
+        .first()
+        .expect("attached() refuses an empty listing")
+        .clone();
+    backend
+        .open(&first.id)
+        .expect("an id this listing does name opens");
 }
 
 #[test]

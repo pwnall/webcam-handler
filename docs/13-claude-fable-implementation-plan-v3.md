@@ -222,11 +222,21 @@ rungs:** none new. **Sizing:** one session.
 **Lands:** the D19 contract as R1 tests over the fake's `DeviceGoneMidStream` — a photo
 answers `DeviceGone` (never `SettleTimeout`/`Busy`); a take finalizes valid-to-last-frame
 with the end named and the stats carried; a preview ends and the slot reaps; the hotplug
-removal arrives bounded — plus the committed `hw_gone_*` recipes that self-skip counted
-("needs an arrangeable mid-stream device loss") on every local host; the
-contributed-evidence protocol paragraph in the notes (what an E-entry from the partner
-rig must carry). **Proves:** every sentence of D19 has a driven hermetic twin, and the
-hardware recipes exist, are recipe-named, and decline by name. **Terminal rungs:** the
+removal arrives bounded; **a later return is a new arrival whose fingerprint says it is
+the same device at a different address** — plus the fake's own model brought up to the
+contract it stands in for (the loss announces its removal, `FakeBackend::device_returns`
+puts the camera back, and a vanished camera refuses every door into it rather than only
+leaving the listing, notes N299–N300); the committed `hw_gone_*` recipes — one per clause,
+over `WCH_DEVICE_UNDER_TEST`, `WCH_DEVICE_LOSS` and `WCH_DEVICE_RETURN` — that self-skip
+counted ("needs an arrangeable mid-stream device loss") on every local host; and the contributed-evidence
+protocol in the notes (what an E-entry from the partner rig must carry, note N299).
+**Proves:** every sentence of D19 has a driven hermetic twin — the criterion's selection
+is the union that names each one, the preview's arm included by reference to the `g6` row
+that already drives it — and the hardware recipes exist, are recipe-named, and decline by
+name. **What moved in the design, and why:** D19's recording bullet named `record_stop` as
+the collector of the loss-time report, and `record_stop` is the one caller that hands back
+the device's refusal instead [N115]; the bullet was amended and the residue named — the
+loss-time stats are reachable in-process and not on the wire. **Terminal rungs:** the
 `hw_gone_*` recipes run once locally to prove the *decline* (counted, named — the skip
 path is the testable half here). **Sizing:** one session.
 

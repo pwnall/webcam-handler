@@ -832,10 +832,20 @@ The contract, spelled entirely in existing vocabulary:
   (the deadline did not expire; the device left), never `Busy`, never a capability
   refusal. The actor's liveness guard already owns this answer [N41].
 - **During a recording**: the take *finalizes* — a valid AVI/Y4M up to the last complete
-  frame (D7's crash story, at last with a producer for its event), a `RecordReport`
-  whose end names the device failure, collectable by `record_stop` under the id the take
-  started with [N173], stats included (D16 — the gap accounting right up to the loss is
-  the rig's streaming-fidelity measurement).
+  frame (D7's crash story, at last with a producer for its event), and a `RecordReport`
+  whose end names the device failure, stats included (D16 — the gap accounting right up
+  to the loss is the rig's streaming-fidelity measurement). **Amended 2026-08-20, and the
+  design sentence was the side that was wrong**: this bullet said the report was
+  "collectable by `record_stop` under the id the take started with [N173]", and
+  `record_stop` is the one caller that does *not* hand it back. A take the device refused
+  is collected as that refusal, because a report answering a request that failed would be
+  a `DeviceGone` reported as a successful recording — AGENTS rule 7's conversion, refused
+  in the tree since P6c and asserted twice [N115]. So the report belongs to whoever
+  *drove* the take: an in-process caller turning `engine::record` gets it, and that is how
+  the `hw_gone_*` recipe reads the gap accounting. The residue is named rather than
+  papered over: **the loss-time stats are not on the wire**, `TakeStatus` carries no stats
+  field, and putting them there is an API change this entry does not make and the owner
+  has not been asked for.
 - **During a preview**: the feed ends; viewers' streams close; the camera's slot is
   reaped, not stranded (D12's claims rule — this is the scenario it was written against).
 - **Around the loss**: `list` stops naming the camera; a `subscribe_events` watcher gets
@@ -845,11 +855,20 @@ The contract, spelled entirely in existing vocabulary:
 - **The protocol**: the recipe is an R3-class `hw_gone_*` suite, `#[ignore]`d,
   recipe-named, self-skipping counted on hosts that cannot arrange the event ("needs an
   arrangeable mid-stream device loss") — written and committed *here*, runnable *there*.
-  Evidence lands as a dated E-entry with transcripts and the producing rig named;
-  behavior contradicting this contract lands as a PF entry and a fake-fault amendment the
-  same day (rule 4). No API change; the fake's `DeviceGoneMidStream` fault stays the
-  hermetic stand-in, held to resemblance against the contributed record once it exists
-  (E5, at last with something real to resemble).
+  Its entry point is three environment variables — `WCH_DEVICE_UNDER_TEST` naming the
+  camera the recipes act on, and `WCH_DEVICE_LOSS` and `WCH_DEVICE_RETURN` holding shell
+  command lines — and **what a contributed E-entry must carry is note N299**, which is the addressable half of this bullet and did not exist until
+  2026-08-20. Evidence lands as a dated E-entry with transcripts and the producing rig
+  named; behavior contradicting this contract lands as a PF entry and a fake-fault
+  amendment the same day (rule 4). No API change; the fake's `DeviceGoneMidStream` fault
+  stays the hermetic stand-in — it announces one removal per node the camera owned and
+  `FakeBackend::device_returns` is the return, so every clause above has a producer on the
+  hermetic side [N300, N301] — held
+  to resemblance against the contributed record once it exists (E5, at last with something
+  real to resemble). **One clause is deliberately not a recipe**: the preview's feed ending
+  and its slot being reaped is a claim about what this daemon does with the device's
+  answer rather than about what the device does, so it is twinned hermetically and the rig
+  is not asked for it.
 
 **D20 — The operator's workbench** *(new at v3; owner, 2026-08-18).* The web client's P5
 scope was supervision: look at cameras, watch a sweep the CLI drove. The owner's actual
@@ -1260,7 +1279,10 @@ earned are §2.10 laws (shared refusal homes; claims come back with their values
 they are about where code lives, not about what counts as evidence. One clarification
 earned by D19: **a resemblance claim about an event this rig cannot produce is `declared`
 until a rig that can produce it contributes the measurement** — E5 with its provenance
-vocabulary applied to the fake's fault menu.
+vocabulary applied to the fake's fault menu. The marking is carried where the claim is
+made: `Fault::DeviceGoneMidStream`'s own doc comment says the shape it exhibits is this
+design's stated contract replayed back rather than a transcript, and names N299 as the
+protocol that would retire the word.
 
 ### 2.13 The privileged development helper (`webcam-handler-priv`)
 
@@ -1359,8 +1381,14 @@ Regenerated at this revision, not accreted (rubric rule 4):
 9. **Mid-stream device loss is stated, modeled, and locally unmeasurable.** The helper's
    interlock (§2.13) keeps real cycles camera-closed, so `DeviceGone` mid-stream is the
    fake's scripted fault — **and, new at v3, a stated contract (D19) with committed
-   `hw_gone_*` recipes that only a rig arranging real loss can run.** Until such a rig
-   contributes its first E-entry, every sentence in D19 is `declared`.
+   `hw_gone_*` recipes that only a rig arranging real loss can run.** One per clause of the
+   contract, over three environment variables (which device, take it away, put it back),
+   with the contributed-evidence protocol in note N299; every clause has a hermetic twin
+   driving it [N300], and the one clause with no recipe behind it is the preview's, which is
+   this daemon's behaviour rather than the device's. The recipes are named rather than
+   counted, here and in N299, because a count of code stated in prose is a claim something
+   has to reconcile [N153, N158, N301]. Until such a rig contributes its first E-entry, every sentence in D19 is
+   `declared`, and the fake's fault carries that word in its own doc.
 10. **A contract can be asserted over one backend and nowhere else, and nothing says so.**
     The G6 review's H1/M29/M30 family; both instances closed, the gap structural and
     named. The defence is a population walked on both backends — ask of every backend

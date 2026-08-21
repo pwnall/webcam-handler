@@ -254,6 +254,15 @@ pub struct CameraFingerprint {
 }
 
 impl CameraFingerprint {
+    /// The one spelling of the field that says **where** the device is.
+    ///
+    /// Named once because two readings of this fingerprint need it: [`Self::matches`] asks
+    /// whether these are the same camera *at the same address*, and
+    /// [`Self::describes_the_same_device`] asks whether they are the same camera wherever it
+    /// is plugged in. A second copy of the string is a second chance for one of them to stop
+    /// meaning what the other means.
+    pub const BUS_PATH: &'static str = "bus_path";
+
     /// A filesystem-safe slug for the session directory layout (design D9).
     #[must_use]
     pub fn slug(&self) -> String {
@@ -276,7 +285,7 @@ impl CameraFingerprint {
     pub fn differing_fields(&self, other: &CameraFingerprint) -> Vec<&'static str> {
         let mut out = Vec::new();
         if self.bus_path != other.bus_path {
-            out.push("bus_path");
+            out.push(Self::BUS_PATH);
         }
         if self.usb_id != other.usb_id && self.usb_id.is_some() && other.usb_id.is_some() {
             out.push("usb_id");
@@ -294,10 +303,38 @@ impl CameraFingerprint {
         out
     }
 
-    /// Whether these fingerprints identify the same camera.
+    /// Whether these fingerprints identify the same camera **at the same address**.
+    ///
+    /// Every field, [`Self::BUS_PATH`] included, so a device that came back on another port
+    /// does not match. That is the right answer for a caller asking "is this the listing entry
+    /// I was holding"; it is the wrong one for a caller asking "did my device come back", and
+    /// [`Self::describes_the_same_device`] is that caller's question.
     #[must_use]
     pub fn matches(&self, other: &CameraFingerprint) -> bool {
         self.differing_fields(other).is_empty()
+    }
+
+    /// Whether these fingerprints describe the same device, **wherever it is plugged in**
+    /// (design D15's split; D19's last sentence).
+    ///
+    /// D15 partitions a camera's facts into where it is and what it is, and this is that
+    /// partition read at the fingerprint: the address may move and nothing else may. It exists
+    /// because D19 promises a consumer that "a later return is a new arrival whose fingerprint
+    /// says it is the same device at a different address", and a caller that went looking for
+    /// the returned device with [`Self::matches`] would search for the one topology the
+    /// sentence has nothing to say about — the recipe that measures D19's last clause did
+    /// exactly that until 2026-08-20 (note **N301**).
+    ///
+    /// Written as "every field that disagrees is the address" rather than as a conjunction of
+    /// the other four, for the reason
+    /// [`crate::profile::ProfileComparison::device_differs_only_in_the_format_tree`] gives
+    /// about its own: a conjunction fails *open* the day the fingerprint grows a field, and a
+    /// claim that two devices are the same should fail closed.
+    #[must_use]
+    pub fn describes_the_same_device(&self, other: &CameraFingerprint) -> bool {
+        self.differing_fields(other)
+            .into_iter()
+            .all(|field| field == Self::BUS_PATH)
     }
 }
 
@@ -1582,6 +1619,89 @@ mod tests {
         b.card = "Something Else".to_owned();
         b.bus_path = "3-4:1.0".to_owned();
         assert_eq!(a.differing_fields(&b), vec!["bus_path", "card"]);
+    }
+
+    #[test]
+    fn a_device_that_moved_is_still_the_same_device_and_a_different_one_never_is() {
+        // **D19's last sentence, at the fingerprint** (note **N301**): the two readings of one
+        // comparison, held apart by the two cases that separate them. `matches` is "the same
+        // camera at the same address" and goes false the moment a device is re-attached on
+        // another port; `describes_the_same_device` is "the same camera, wherever it is
+        // plugged in", which is the question a consumer asks after a replug and the question
+        // the `hw_gone_a_return_*` recipe searches a fresh listing with.
+        let attached = CameraFingerprint {
+            bus_path: "3-4:1.0".to_owned(),
+            usb_id: Some(UsbId {
+                vendor: 0x04f2,
+                product: 0xb83c,
+            }),
+            card: "OBSBOT Tiny 3".to_owned(),
+            driver: "uvcvideo".to_owned(),
+            serial: None,
+        };
+
+        // Where it was: both readings agree, which is what stops the arm below from passing on
+        // an implementation that answers `true` to everything.
+        assert!(attached.matches(&attached));
+        assert!(attached.describes_the_same_device(&attached));
+
+        // Another port on the same machine, and nothing else moved. This is the case the
+        // recipe exists for, and the one `matches` refuses.
+        let mut moved = attached.clone();
+        moved.bus_path = "3-7:1.0".to_owned();
+        assert_eq!(
+            attached.differing_fields(&moved),
+            vec![CameraFingerprint::BUS_PATH],
+            "the fixture moved something other than the address"
+        );
+        assert!(
+            !attached.matches(&moved),
+            "a device on another port is not the listing entry the caller was holding"
+        );
+        assert!(
+            attached.describes_the_same_device(&moved),
+            "a device that came back on another port is the same device, which is D19's last \
+             sentence and what a return recipe searches the listing with"
+        );
+
+        // A genuinely different camera at the same address — the second camera plugged into the
+        // port the first one left. Neither reading may call it the same device, and this is the
+        // arm that stops `describes_the_same_device` from being "true".
+        let mut somebody_else = attached.clone();
+        somebody_else.card = "Integrated Camera".to_owned();
+        somebody_else.usb_id = Some(UsbId {
+            vendor: 0x04f2,
+            product: 0xb5eb,
+        });
+        assert!(
+            !attached.describes_the_same_device(&somebody_else),
+            "a different camera in the same socket was called the same device"
+        );
+        // And a different camera *and* a moved address is still not the same device, because
+        // the rule is "every disagreement is the address" and not "the address disagrees".
+        let mut elsewhere = somebody_else.clone();
+        elsewhere.bus_path = "3-7:1.0".to_owned();
+        assert!(
+            !attached.describes_the_same_device(&elsewhere),
+            "a different camera on another port was called the same device"
+        );
+
+        // One serial apart is a different device wherever it sits \[PF:8\], and one absent
+        // serial is not a disagreement at all — the split is read off `differing_fields`, so
+        // both of its rules hold here without being restated.
+        let mut twin = attached.clone();
+        twin.serial = Some("0001".to_owned());
+        assert!(
+            twin.describes_the_same_device(&attached),
+            "an absent serial is an absence and never a disagreement"
+        );
+        let mut other_twin = twin.clone();
+        other_twin.serial = Some("0002".to_owned());
+        other_twin.bus_path = "3-7:1.0".to_owned();
+        assert!(
+            !twin.describes_the_same_device(&other_twin),
+            "two declared serials that disagree are two devices, whatever port they are on"
+        );
     }
 
     #[test]
