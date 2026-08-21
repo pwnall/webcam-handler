@@ -311,11 +311,13 @@ impl<'de> Deserialize<'de> for CameraSelector {
     {
         let raw = String::deserialize(deserializer)?;
         parse(&raw).map_err(|_| {
-            serde::de::Error::invalid_value(
-                serde::de::Unexpected::Str(&raw),
-                &"a camera selector: cam:<id> (or a bare id or unambiguous prefix), \
-                  /dev/videoN, bus:<interface-path>, usb:<vid>:<pid>, or serial:<text>",
-            )
+            // Through [`vocabulary`], not transcribed beside it. This sentence used to spell
+            // the five schemes out a hundred and ninety lines below the function that renders
+            // them, and the only test on this door asserted `is_err()` without reading the
+            // message — so a sixth scheme would have joined every other reader of `ALL` and
+            // not this one, and the wire would have taught a grammar the parser no longer had.
+            let expected = format!("a camera selector: {}", vocabulary());
+            serde::de::Error::invalid_value(serde::de::Unexpected::Str(&raw), &&*expected)
         })
     }
 }
@@ -518,6 +520,25 @@ mod tests {
             assert!(
                 serde_json::from_str::<CameraSelector>(raw).is_err(),
                 "{raw} reached a handler as a selector"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wires_refusal_teaches_the_same_vocabulary_the_parsers_does() {
+        // The walk `a_scheme_this_build_does_not_know_is_refused_naming_the_vocabulary` runs
+        // over the *parser*'s refusal, on the door off a socket — which is where the sentence
+        // used to be a transcription rather than a rendering, and where the only arm asserted
+        // `is_err()` and never read what it said (note **N303**). Driven from
+        // `SelectorScheme::ALL`, so a sixth scheme is a red test here rather than a wire that
+        // quietly teaches five spellings out of six.
+        let message = serde_json::from_str::<CameraSelector>("\"nope:0\"")
+            .expect_err("an unknown scheme is refused")
+            .to_string();
+        for scheme in SelectorScheme::ALL {
+            assert!(
+                message.contains(scheme.example()),
+                "the wire's refusal does not teach {scheme:?}: {message}"
             );
         }
     }

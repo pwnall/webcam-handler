@@ -977,14 +977,16 @@ impl Wchd {
     /// refusal from the enumeration travels unchanged: a backend that cannot enumerate at all
     /// is not a camera that vanished.
     ///
-    /// **D14's four other spellings do not reach that fallback, and cannot**: a `bus:`, a
-    /// `usb:`, a `serial:` or a `/dev` path is resolved by *filtering the live listing*, and a
-    /// camera that was unplugged mid-take is no longer in it — there is nothing left on this
-    /// machine to match the spelling against, and matching it against the take's recorded
-    /// `CameraId` would be a second resolver with a different grammar. So a caller that
-    /// addressed a take by anything but its id is answered `CameraUnknown` when the device
-    /// goes, and collects the take by the id `wch_record_start` answered with, which every
-    /// answer on this surface carries.
+    /// **Only an id reaches that fallback, and that is a property of the code below rather than
+    /// a list of the spellings it is not**: `CameraSelector::as_id` answers `Some` for exactly
+    /// one scheme, and every other one is resolved by *filtering the live listing*, which a
+    /// camera unplugged mid-take is no longer in. There is nothing left on this machine to match
+    /// such a spelling against, and matching it against the take's recorded `CameraId` would be
+    /// a second resolver with a different grammar. So a caller that addressed a take by anything
+    /// but its id is answered `CameraUnknown` when the device goes, and collects the take by the
+    /// id `wch_record_start` answered with, which every answer on this surface carries. Written
+    /// this way because the sentence used to count D14's other spellings, and a count is a
+    /// transcription of `SelectorScheme::ALL` that a sixth scheme falsifies (note **N303**).
     async fn recording_camera(&self, requested: CameraSelector) -> schema::Result<CameraId> {
         match self.resolve(requested.clone()).await {
             Ok(info) => Ok(info.id),

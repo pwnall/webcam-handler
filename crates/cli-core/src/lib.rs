@@ -49,7 +49,7 @@ use schema::error::{Error, ErrorKind, Result};
 use schema::metrics::MetricName;
 use schema::profile::DeviceProfile;
 use schema::report::{CameraDetail, CameraList, ControlReport, WriteReport};
-use schema::selector::CameraSelector;
+use schema::selector::{CameraSelector, SelectorScheme};
 use schema::session::{Session, SessionList, SessionStatus, SweepRequest, SweepSpec};
 use schema::snapshot::{RestoreReport, Snapshot};
 use schema::video::{RecordReport, RecordRequest};
@@ -552,10 +552,46 @@ impl std::str::FromStr for SizeArg {
 /// A camera, in any spelling the caller holds (D1, D14).
 #[derive(Debug, Clone, Args)]
 pub struct CameraArg {
-    /// Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path
-    /// (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001`.
-    #[arg(value_name = "CAMERA")]
+    /// Which camera, in any of the spellings this build understands.
+    ///
+    /// **Both help forms are set explicitly, and that is what keeps this comment out of the
+    /// terminal.** clap derives an argument's short help from a doc comment's first line and its
+    /// long help from the rest, so a comment written for a Rust reader — rustdoc links included,
+    /// which notes **N123** and **N249** keep off a terminal — is what `--help` would print. The
+    /// vocabulary has one home, so both forms come from [`camera_arg_help`] and this paragraph
+    /// stays where it is addressed.
+    #[arg(
+        value_name = "CAMERA",
+        help = camera_arg_help(),
+        long_help = camera_arg_help()
+    )]
     pub camera: String,
+}
+
+/// The `<CAMERA>` help, rendered from the scheme vocabulary rather than transcribed from it.
+///
+/// **A doc comment cannot do this and that is the whole reason this function exists.** clap
+/// takes an argument's help from its doc comment, which is a literal — so the five spellings
+/// were written out here, a second time in `schema::selector`'s `Deserialize`, a third time in
+/// `xtask`'s placeholder glossary and a fourth in the daemon's prose, and a sixth scheme joined
+/// `SelectorScheme::ALL` and none of them (note **N303**). Built from `ALL` here, it joins by
+/// existing.
+///
+/// The spellings are backticked one by one rather than taken from [`schema::selector::vocabulary`]
+/// whole, because this string is *two* readers' — clap prints it to a terminal and
+/// `docs/agent-guide.md` prints it as a Markdown table cell, where a bare `<id>` is an HTML tag.
+/// The vocabulary is still `ALL`'s; only the punctuation is this function's, which is the same
+/// split `xtask`'s selector table already runs on.
+#[must_use]
+pub fn camera_arg_help() -> String {
+    let spellings = SelectorScheme::ALL
+        .iter()
+        .map(|scheme| format!("`{}`", scheme.example()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Which camera: {spellings}. An id may be written bare, or as any unambiguous prefix of one."
+    )
 }
 
 impl CameraArg {
@@ -571,6 +607,18 @@ impl CameraArg {
     pub fn selector(&self) -> Result<CameraSelector> {
         schema::selector::parse(&self.camera)
     }
+}
+
+/// `calibrate list`'s optional camera, taught the same vocabulary as every other verb's.
+///
+/// One sentence of its own — the argument is optional and every other one is required — and then
+/// the shared vocabulary verbatim, so this verb cannot be the one that ends up a spelling short.
+#[must_use]
+fn calibrate_list_camera_help() -> String {
+    format!(
+        "One camera's sessions; every camera's when omitted. {}",
+        camera_arg_help()
+    )
 }
 
 /// The verbs. P1 landed the read half, P2 the write and capture halves; calibration,
@@ -1141,8 +1189,17 @@ pub enum CalibrateCommand {
 
     /// Every session on this machine, newest first.
     List {
-        /// One camera's sessions, in any spelling `info` takes. All cameras when omitted.
-        #[arg(value_name = "CAMERA")]
+        /// One camera's sessions. Every camera's when omitted.
+        ///
+        /// The one camera positional that is not a [`CameraArg`] — it is optional, and clap
+        /// flattens a struct rather than an `Option` of one — so its help comes from the same
+        /// [`camera_arg_help`] every other verb's does. A second sentence here would be a second
+        /// grammar for one verb, which is the defect D14 exists to end.
+        #[arg(
+            value_name = "CAMERA",
+            help = calibrate_list_camera_help(),
+            long_help = calibrate_list_camera_help()
+        )]
         camera: Option<String>,
     },
 }
@@ -2723,6 +2780,76 @@ mod tests {
             camera: String::new(),
         };
         assert!(matches!(arg.selector(), Err(Error::CameraUnknown { .. })));
+    }
+
+    #[test]
+    fn every_camera_taking_verb_teaches_the_whole_vocabulary_in_its_help() {
+        // The other half of the door below: the parser takes five spellings, and a reader who
+        // has never seen this tool learns which five from `--help` and from the guide generated
+        // out of the same string. That sentence was a transcription until note **N303** — five
+        // spellings written out in a doc comment a hundred lines from `SelectorScheme::ALL`,
+        // with nothing able to notice a sixth.
+        //
+        // Walked over the *rendered* help of every argument named `CAMERA` on every verb, in
+        // both roots, because what is being asserted is what a reader is shown rather than what
+        // `camera_arg_help` returns — a `#[arg(help = …)]` that stopped being applied would
+        // leave the function correct and the terminal wrong.
+        let mut seen = 0;
+        for &program in Program::ALL {
+            let command = program.command();
+            for verb in command.get_subcommands() {
+                for sub in std::iter::once(verb).chain(verb.get_subcommands()) {
+                    for arg in sub.get_arguments() {
+                        if arg
+                            .get_value_names()
+                            .is_none_or(|names| !names.iter().any(|name| name.as_str() == "CAMERA"))
+                        {
+                            continue;
+                        }
+                        seen += 1;
+                        // **Both forms, because the comment on `CameraArg` claims both.** clap
+                        // prints the short one under `-h` and the long one under `--help`, and
+                        // the doc comment there says that setting both explicitly is what keeps
+                        // a Rust-facing paragraph and its rustdoc links off a terminal (notes
+                        // **N123**, **N249**). An arm reading only `get_help()` held half of
+                        // that sentence: dropping `long_help` left the function correct, this
+                        // arm green, and `--help` printing the comment. It is caught by
+                        // `no_text_this_surface_prints_carries_a_rustdoc_link` either way — but
+                        // by a different predicate than the one this arm is about, and a check
+                        // red for the wrong reason reads as green about the right one
+                        // (notes **N240**–**N243**).
+                        for form in ["-h", "--help"] {
+                            let help = match form {
+                                "-h" => arg.get_help().map(ToString::to_string),
+                                _ => arg.get_long_help().map(ToString::to_string),
+                            }
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "{} {}'s <CAMERA> has no {form} text",
+                                    program,
+                                    sub.get_name()
+                                )
+                            });
+                            for scheme in SelectorScheme::ALL {
+                                assert!(
+                                    help.contains(scheme.example()),
+                                    "{} {}'s <CAMERA> {form} text does not teach {scheme:?}: \
+                                     {help}",
+                                    program,
+                                    sub.get_name()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // A walk that found no `CAMERA` argument would pass every assertion above without
+        // making one, which is the skip that reads as a pass (note **N231**).
+        assert!(
+            seen >= 2 * SelectorScheme::ALL.len(),
+            "only {seen} <CAMERA> argument(s) were found across both roots"
+        );
     }
 
     #[test]

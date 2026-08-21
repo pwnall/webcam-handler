@@ -287,6 +287,20 @@
 #                                  the one home two roots share.
 #   crates/engine/src/profile.rs   the T3 invariant/volatile split, which is the whole value of
 #                                  the corpus expressed as a fold over an open camera's answers.
+#   crates/imaging/src/stream_stats.rs
+#                                  D16's delivery accumulator, landed at P8b. `push(sequence,
+#                                  timestamp_us)` and `stats()`: integer arithmetic end to end
+#                                  over the two numbers every frame already carries, and it
+#                                  reads no clock by construction — the one field that would
+#                                  need one is `wall_clock_skew_us`, which the engine fills.
+#                                  That is `metrics.rs` two files along, which came in at P3f
+#                                  on the same argument. **29 mutants** (`cargo mutants
+#                                  --list`, 2026-08-20).
+#   crates/imaging/src/compare.rs  D17's comparison core, landed at P8b. `photos` is total by
+#                                  construction — its header says so — and `read` is `&[u8]`
+#                                  in, pixels out, every refusal seeded by a fixture in the
+#                                  same file. That is `avi/read.rs`'s argument, one directory
+#                                  along. **51 mutants.**
 #
 # ## What B8 widened, and the run that came with it (2026-08-16)
 #
@@ -367,6 +381,18 @@
 #                                  `agent-guide-current.sh` on every push, which is a strictly
 #                                  stronger check than a mutant: any change to what it emits is
 #                                  already red, including the ones nobody thought of.
+#   crates/engine/src/facade.rs    D18's blessed composition: the same three or four engine calls
+#                                  the CLI executor already made, in the same order. This is
+#                                  `xtask/`'s argument one line up rather than `engine`'s shell
+#                                  argument — what the floor would buy here is bought twice over
+#                                  and more strictly already. `cli-parity.sh` and
+#                                  `binary(facade_equivalence)` pin its answers byte for byte
+#                                  against the direct CLI, and `facade-is-the-composition.sh`
+#                                  holds which engine modules it may name in either direction, so
+#                                  a change to what it composes is red before a mutant could ask
+#                                  — including the changes nobody thought of. **19 mutants**, and
+#                                  they are cheap; the disposition is a judgement about what
+#                                  already holds the file and not about the price.
 #   crates/client/                 `remote.rs`, `transport.rs`, `lib.rs`, `main.rs` — a socket, a
 #                                  jsonrpsee client and a composition root. The same class as
 #                                  `engine`'s shell and `crates/daemon`: a survivor needs a rig
@@ -391,14 +417,90 @@
 #                                  over device-derived values.
 #   crates/imaging/src/lib.rs      module declarations and the crate's lint block.
 #
-# **What this file still cannot do, and it is the honest residual:** nothing checks that the two
-# lists together cover the tree. This section was written by a walk somebody performed once, and
-# the next module added to `crates/` will be in neither list again on the day it lands. The
-# mechanical form is a canonical marker per exclusion — one `scope-out: <path> — <reason>` line
-# apiece — and a predicate that walks every product `.rs` and requires it to be in
-# `examine_globs` or to have one. That is the shape `unsafe-scope.sh` already uses for a
-# crate-root attribute it cannot make uniform, and it is what retires this paragraph's
-# maintenance cost.
+# ## What P9 found in neither list, and the predicate that stops it happening again (2026-08-20)
+#
+# The paragraph above `crates/daemon` states the law — *"an exclusion that is not a decision with
+# a date is an oversight wearing one"* — and the residual this section used to end on predicted
+# what would happen next: "the next module added to `crates/` will be in neither list again on
+# the day it lands." It did, three times over, and nothing in the tree could say so.
+# `crates/imaging/src/stream_stats.rs` (D16), `crates/imaging/src/compare.rs` (D17) and
+# `crates/engine/src/facade.rs` (D18) all landed across P8 in neither list. The first two are
+# **owed** and are written into that block above; the third is **out** and is written into the
+# **Out** block above it with the argument that carries it. All three are decisions with a date
+# now, which is what the rule asks for.
+#
+# **Nothing here widens the floor**, and the measurements are today's rather than an estimate, so
+# that the session that does widen it is choosing against a number: `cargo mutants --list`
+# reports **1131** mutants for the scope below, and **1230** with the three files added — 29 for
+# `stream_stats.rs`, 51 for `compare.rs`, 19 for `facade.rs`. The precedent this file sets three
+# times (P4d at `:49-59`, P6a at `:149-161`, B8 at `:291`) is that a widening lands *with* its
+# run and with every survivor triaged; `just mutants` is hours and the owner deferred it this
+# session, so a widening taken here would be note **N209**'s mistake repeated — a known survivor
+# under a gate criterion with no register line.
+#
+# ## The register, and why it lives in this file rather than in the sources it names
+#
+# `scripts/gates/mutation-scope-is-decided.sh` walks every product `.rs` — the `src/` tree of
+# every workspace member, read out of `cargo metadata` so a new crate joins the population by
+# being a member — and requires each file to be in `examine_globs` below or to be covered by one
+# of the `scope-out:` markers under this paragraph. A file in neither is the state this file
+# forbids, and it is now red rather than invisible.
+#
+# **Both homes for the markers were considered and this one is deliberate.** The other shape —
+# one `scope-out:` comment inside each excluded source file, which is what `unsafe-scope.sh` does
+# for a crate-root attribute — puts mutation-floor bookkeeping into every excluded product
+# module and makes an author who has never run the floor responsible for remembering it exists.
+# The argument for every exclusion is already written above, in this file, in paragraphs a
+# reader reads top to bottom; a marker beside its own paragraph is an *index* of it, and a
+# marker four directories away is a second copy that can disagree with it (design §2.10). So the
+# markers are here, the reasons stay in the prose above them, and the predicate reads only the
+# path — the reason cell is for the reader.
+#
+# **A directory marker is a blanket, and a blanket may have exceptions.** `crates/daemon/` is out
+# except for the three `http` folds in `examine_globs`; `crates/backends/v4l2/` is out except for
+# `hotplug.rs`. Where the prose blankets a crate, the marker blankets it; where the prose names
+# files, the marker names files, and a *file* marker naming a path that is also in `examine_globs`
+# is refused — a file in both lists is as undecided as a file in neither. Every marker must also
+# decide at least one file the floor does not already cover, so a marker that outlived the module
+# it excluded is red rather than decorative, which is the direction `unsafe-scope.sh`'s register
+# is checked in too.
+#
+# scope-out: crates/schema/ — derives and data; its laws are asserted by the battery
+# scope-out: crates/daemon/ — the shell; everything but the three `http` folds in `examine_globs`
+# scope-out: crates/backends/fake/ — the fake *is* the double; rubric A9 judges it by resemblance
+# scope-out: crates/backends/v4l2/ — `/sys`, `/proc` and an open device; R2 and R3 own that half
+# scope-out: crates/testkit/ — the harness that does the asserting
+# scope-out: crates/priv/ — dev-only and root-capable; `privileged-helper.sh` holds its boundary
+# scope-out: crates/client/ — a socket, a jsonrpsee client and a composition root
+# scope-out: crates/cli-core/ — rendering, the clap tree and a committed TSV read back
+# scope-out: crates/cli/ — rendering
+# scope-out: crates/web/ — rendering
+# scope-out: xtask/ — the emitter; its output is diffed byte for byte against committed artifacts
+# scope-out: crates/api/src/lib.rs — the T5 trait: a `wire_surface!` invocation and doc comments
+# scope-out: crates/engine/src/actor.rs — a thread, a registry and a bounded queue
+# scope-out: crates/engine/src/calibrate.rs — the imperative shell
+# scope-out: crates/engine/src/capture.rs — the imperative shell
+# scope-out: crates/engine/src/discover.rs — the imperative shell
+# scope-out: crates/engine/src/double.rs — `#[cfg(test)]`
+# scope-out: crates/engine/src/facade.rs — out on `xtask/`'s argument; see the **Out** block above
+# scope-out: crates/engine/src/lib.rs — module declarations
+# scope-out: crates/engine/src/lifecycle.rs — the imperative shell
+# scope-out: crates/engine/src/paths.rs — an environment lookup
+# scope-out: crates/engine/src/photo.rs — the imperative shell
+# scope-out: crates/engine/src/profile.rs — owed; see the owed block above
+# scope-out: crates/engine/src/progress.rs — a seam whose `emit` cannot fail by design
+# scope-out: crates/engine/src/refusal.rs — one spelling of `IllegalTransition`
+# scope-out: crates/engine/src/resolve.rs — owed; see the owed block above
+# scope-out: crates/engine/src/snapshot.rs — the imperative shell
+# scope-out: crates/engine/src/write.rs — the imperative shell
+# scope-out: crates/imaging/src/compare.rs — owed; see the owed block above
+# scope-out: crates/imaging/src/decode.rs — owed; see the owed block above
+# scope-out: crates/imaging/src/encode.rs — owed; see the owed block above
+# scope-out: crates/imaging/src/exif.rs — owed; see the owed block above
+# scope-out: crates/imaging/src/fault.rs — a `match` with one arm; the same class as `testkit`
+# scope-out: crates/imaging/src/fixtures.rs — the synthetic image generators
+# scope-out: crates/imaging/src/lib.rs — module declarations and the crate's lint block
+# scope-out: crates/imaging/src/stream_stats.rs — owed; see the owed block above
 examine_globs = [
     "crates/api/src/codes.rs",
     "crates/api/src/photo.rs",

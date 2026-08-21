@@ -287,8 +287,20 @@ against the fake — start, plan, sweep, review, select, **apply and restore** �
 document (asserted through `calibrate status` on a second socket — the page and the wire
 agree); a `session_conflict` from an out-of-order click renders **the whole of** its
 instruction-last sentence and the flow recovers; the sweep view paints each sample as its
-event lands; the CLI can drive a session the page started and vice versa (one state
-machine, two hands — asserted, because it is the claim T4's law makes here).
+event lands; the CLI can drive a session the page started (one state machine, two hands —
+**owed an assertion**, not asserted: it is true of the product and no browser claim drives
+it, because none of the rung's claims spawns a CLI or client binary at all, and the "second
+socket" above is a raw WebSocket reading `wch_calibrate_status`. The word is corrected here
+rather than left standing, since note **N305** records the same half as unasserted and one
+fact is stated once). **The "and vice versa" half is struck (2026-08-20, note **N305**): the
+shipped page has no verb for it.** `flow.session` is
+assigned in exactly one place, from `wch_calibrate_start`'s answer, and the session list's
+click hands its document to a painter rather than to the flow — so a page cannot pick up a
+session the CLI opened, and the daemon's own refusal for the second `calibrate start`
+("resume it, or finish it before starting another") names an instruction this client cannot
+carry out. A Proves bullet nothing can drive is the state docs/9's derived-population rule
+exists to prevent; the adopt path and the claim that crosses the hands are owed together and
+are named in **N305** rather than left standing here as a claim.
 **Terminal rungs:** R1-web. **Sizing:** one to two sessions — split between flow and
 sweep-view if the first session says so.
 

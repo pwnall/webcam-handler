@@ -542,9 +542,14 @@ pub const MAX_CONSECUTIVE_ACCEPT_FAILURES: u32 = 64;
 /// abort those three steps end on reaches a *task*; a `spawn_blocking` closure is a thread, and
 /// `Drop for Runtime` waits for it with no bound at all — so the same number is handed to
 /// `Runtime::shutdown_timeout` after the ordered teardown has returned. Four readers, one
-/// number, and the process's worst case is therefore twice this plus
-/// [`WEB_LISTENER_STOP_MS`] rather than one of it: still under a fifth of systemd's
-/// `TimeoutStopSec`, which is the comparison that decides this constant.
+/// number, and the process's worst case is therefore twice this plus [`WEB_LISTENER_STOP_MS`]
+/// rather than one of it — **42 s against the 45 s `packaging/systemd/wchd.service` ships**,
+/// which is the comparison that decides this constant and is a three-second margin rather than
+/// the comfortable one this paragraph used to claim. It said "under a fifth of systemd's
+/// `TimeoutStopSec`", reasoning against systemd's 90 s default while this repository ships a
+/// unit that halves it; 42 s is 93 % of 45 s, and `scripts/gates/systemd-units.sh` is what
+/// compares the sum against the shipped number rather than one term of it (note **N304**).
+/// Raising this constant costs three seconds of headroom and then the unit.
 pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 20_000;
 
 /// How long the composition root waits for the **web listener** to finish stopping.

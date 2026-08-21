@@ -530,10 +530,17 @@ pub enum Error {
     /// **The condition first and the instruction last**, and the order is the whole of what
     /// this rendering decides. The template was `"cannot {op} from state {from}"` when D8 was
     /// the only producer and `op` was a verb phrase — `"select"`, `"sweep privacy"` — where a
-    /// trailing `from state untouched` reads. The variant now has eleven producers across five
-    /// crates and most of them put a **multi-clause instruction** in `op`, because that is the
-    /// field a caller acts on; appending anything to such a sentence garbles it. Measured
-    /// through the shipped binaries before this changed:
+    /// trailing `from state untouched` reads. The variant now has producers across most of the
+    /// workspace and most of them put a **multi-clause instruction** in `op`, because that is
+    /// the field a caller acts on; appending anything to such a sentence garbles it. How many
+    /// there are, and in how many crates, is deliberately not written here: a prose count of
+    /// code is a claim something reconciles or it is not made (notes **N153**, **N158**), and
+    /// the last one written here — "eleven producers across five crates" — was wrong in both
+    /// halves and in the same direction, which note **N303** measured rather than restating.
+    /// What is reconciled is this crate's own producers, by
+    /// `an_illegal_transitions_instruction_is_the_last_thing_it_says`, which reads the
+    /// construction sites out of the source beside it. Measured through the shipped binaries
+    /// before this changed:
     ///
     /// ```text
     /// cannot write a photo to …/x.tiff; this build writes .jpg, .png, .ppm from state unwritable_extension(tiff)
@@ -1360,11 +1367,26 @@ mod tests {
         // has, called: what each one puts in `op` is what a caller is supposed to do, and it
         // has to survive being rendered.
         //
-        // The five below are this crate's; the other six live in `webcam-handler-engine`,
-        // `webcam-handler-daemon`, `webcam-handler-cli-core` and `webcam-handler-client`, and
-        // `a_refusal_ends_with_the_instruction_its_payload_carries` drives one of those through
-        // the shipped binary — the template is one line and one arm of it going red is enough
-        // to condemn it.
+        // **The population below is this crate's, and it is reconciled rather than counted.**
+        // It used to end on `assert_eq!(seen, 5, "this crate's producers are five")` — a number
+        // written here, so a sixth producer joined neither the array nor the assertion, and two
+        // already had: `server_path`'s relative-path arm and `budget_ms`'s zero-duration arm
+        // were both unreached (note **N303**). The reconciliation at the end of this test reads
+        // the construction sites out of this crate's own source and requires one arm per site,
+        // which is the same derived-population rule the gates under `scripts/gates/` follow.
+        //
+        // The producers outside this crate live in `webcam-handler-engine`,
+        // `webcam-handler-daemon`, `webcam-handler-cli-core`, `webcam-handler-client`,
+        // `webcam-handler-v4l2` and `webcam-handler-fake` — a list this comment does not hold
+        // itself to, because nothing reconciles it and a prose count of code is a claim
+        // something reconciles or it is not made (notes **N153**, **N158**). Nor is
+        // `engine::refusal::illegal` that crate's one home: its own header scopes it to the
+        // pure cores' typed refusals, and the engine's shell builds the variant directly in
+        // `preview.rs` and `lifecycle.rs`. One producer outside this crate is driven through
+        // the shipped binary by
+        // `a_refusal_from_outside_the_schema_crate_ends_with_its_instruction_too` in
+        // `crates/cli/tests/calibrate.rs` — the template is one line, and one arm of it going
+        // red is enough to condemn it.
         let refusals = [
             Sink::ServerPath {
                 path: "/tmp/x.tiff".into(),
@@ -1389,6 +1411,20 @@ mod tests {
             .err(),
             crate::video::RecordRequest {
                 duration_ms: Some(crate::limits::MAX_RECORDING_MS + 1),
+                ..record_request()
+            }
+            .budget_ms()
+            .err(),
+            crate::video::RecordRequest {
+                sink: Sink::ServerPath {
+                    path: "take.avi".into(),
+                },
+                ..record_request()
+            }
+            .server_path()
+            .err(),
+            crate::video::RecordRequest {
+                duration_ms: Some(0),
                 ..record_request()
             }
             .budget_ms()
@@ -1427,7 +1463,24 @@ mod tests {
             // whole instruction rather than a verb, which is the shape the old template
             // garbled.
         }
-        assert_eq!(seen, 5, "this crate's producers are five");
+        // **The count, derived from the crate rather than written down.** Every place this crate
+        // builds the variant is a producer whose `op` a reader acts on, so the population is the
+        // construction sites in its own product code — read here, not transcribed. `error.rs` is
+        // excluded and that exclusion is the rule rather than a convenience: this file is the
+        // variant's *home*, so its occurrences are the declaration, the kind mapping and
+        // `Error::sample`'s fixture, none of which is a producer refusing anything.
+        let sites = illegal_transition_sites();
+        assert_eq!(
+            seen, sites,
+            "this crate names `IllegalTransition {{` at {sites} place(s) in its product code and \
+             {seen} of them are driven here; a producer nobody calls is a sentence nobody has \
+             read, and a `match` pattern over the variant is counted here too — if that is what \
+             moved, drive it or say in this walk why a pattern is not a producer"
+        );
+        assert!(
+            seen > 1,
+            "a population of one proves nothing about a template"
+        );
         assert!(
             refusal_op(
                 Sink::ServerPath {
@@ -1438,6 +1491,87 @@ mod tests {
             .contains(';'),
             "the fixture stopped being the multi-clause shape this test is about"
         );
+    }
+
+    /// How many places this crate's product code names [`Error::IllegalTransition`]'s variant.
+    ///
+    /// The population `an_illegal_transitions_instruction_is_the_last_thing_it_says` holds
+    /// itself to, read out of the source rather than written into an assertion. `error.rs` is
+    /// the variant's home — its declaration, its `ErrorKind` mapping and `Error::sample`'s
+    /// fixture are not producers — so this walks every *other* module of the crate.
+    ///
+    /// **It walks the class rather than one spelling of it, in both dimensions**, because a ban
+    /// on a defect names the class and not one spelling (note **N249**, rubric A17; the
+    /// measurement is note **N307**). The first draft read `src/` one level deep and matched
+    /// the literal `Error::IllegalTransition {`, so a producer one directory down, or one
+    /// written `IllegalTransition { … }` under a
+    /// `use crate::error::Error::IllegalTransition`, was counted zero times — and because the
+    /// assertion is an equality, a site this could not see moved *neither* side and the
+    /// reconciliation stayed green on the exact state it replaced a hand-written `5` to catch.
+    /// Both were seeded and watched to go red before this was called done. The walk therefore
+    /// recurses, and matches the variant name.
+    ///
+    /// **A destructuring pattern is counted as a site and that is deliberate**, since the two
+    /// readings cannot be told apart by a substring and the assertion's sentence names both:
+    /// one of them is a producer owed an arm, the other is a walk owed a narrowing, and a
+    /// reader is given the pair rather than a guess (note **N250**). This crate's product code
+    /// has no such pattern today.
+    ///
+    /// Comment lines are dropped first — the crate's doc comments name the variant a dozen
+    /// times, `[`Error::IllegalTransition`]` among them — so what is counted is code.
+    ///
+    /// Test code is excluded by the same rule the gate suite uses: everything from a file's one
+    /// `#[cfg(test)]` marker to the end of it. A module with two markers is a **failure and not
+    /// a pass**, because a file whose boundary has no answer is a file where the count has none
+    /// either.
+    fn illegal_transition_sites() -> usize {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // The one file excluded, by its **path** rather than by its name: `error.rs` is
+        // excluded because it is the variant's home, and a `src/<module>/error.rs` written
+        // later would be somebody else's module with the home's name on it.
+        let home = src.join("error.rs");
+        let mut sites = 0;
+        let mut files = 0;
+        let mut pending = vec![src];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("the crate's own source is readable") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "rs") {
+                    continue;
+                }
+                if path == home {
+                    continue;
+                }
+                files += 1;
+                let text = std::fs::read_to_string(&path).expect("a source file is readable");
+                let markers = text.matches("#[cfg(test)]").count();
+                assert!(
+                    markers <= 1,
+                    "{} carries {markers} `#[cfg(test)]` markers, so where its product code \
+                     ends has no answer",
+                    path.display()
+                );
+                let product = match text.find("#[cfg(test)]") {
+                    Some(at) => &text[..at],
+                    None => &text[..],
+                };
+                sites += product
+                    .lines()
+                    .filter(|line| !line.trim_start().starts_with("//"))
+                    .map(|line| line.matches("IllegalTransition {").count())
+                    .sum::<usize>();
+            }
+        }
+        assert!(
+            files > 1,
+            "the walk found {files} module(s) beside error.rs; a population read off an empty \
+             directory would make the reconciliation vacuous"
+        );
+        sites
     }
 
     /// A `RecordRequest` whose every field but the one under test is the ordinary one.

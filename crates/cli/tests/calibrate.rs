@@ -38,6 +38,7 @@ use std::process::Command;
 use camino::{Utf8Path, Utf8PathBuf};
 use engine::store::{LockProtocol, SessionStore, StoreLock};
 use schema::paths::MapEnv;
+use schema::selector::SelectorScheme;
 use serde_json::{Map, Value};
 
 /// The `webcam-handler-cli` binary this test drives, built by cargo alongside it.
@@ -1629,6 +1630,158 @@ fn list_shows_every_session_and_one_cameras_when_a_camera_is_named() {
         cameras.contains(&camera.to_owned()),
         "the filtered listing named a camera the full one did not: {one}"
     );
+}
+
+#[test]
+fn the_session_listing_takes_every_spelling_the_other_verbs_take() {
+    // **The one camera positional that is not a `CameraArg`.** Nineteen verbs flatten that
+    // struct, whose `selector()` is `schema::selector::parse`, so they cannot fork; `calibrate
+    // list`'s camera is optional, clap flattens a struct rather than an `Option` of one, and it
+    // therefore parses on a line of its own (`cli_core`'s `CalibrateCommand::List` arm). Until
+    // note **N303** the only test on that positional passed `cam:obsbot` — an `Id` spelling
+    // `CameraId::parse` accepts identically — so swapping that line for an id-only parser left
+    // the whole workspace green while `calibrate list bus:3-4:1.0` started refusing. This is the
+    // arm that goes red on a second grammar for this one verb.
+    //
+    // The spellings are read out of the committed profile the fake replays, not out of this
+    // build's own answer about the camera: a test that asked `info` for the bus path and then
+    // asked `calibrate list` about it would be asking one resolver to agree with itself (note
+    // **N252**). The walk is over `SelectorScheme::ALL` so a sixth scheme has no sample and
+    // fails here rather than quietly going untested.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["chicony-rgb", "obsbot-tiny3"]);
+    wch.ok(&["calibrate", "start", "cam:integrated", "--task", "here"]);
+    wch.ok(&["calibrate", "start", "cam:obsbot", "--task", "there"]);
+
+    let profile: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_root().join("corpus/profiles/chicony-rgb.json"))
+            .expect("the committed profile is readable"),
+    )
+    .expect("the committed profile is a document");
+    let info = &profile["invariant"]["info"];
+    let fingerprint = &info["fingerprint"];
+    let node = info["nodes"][0]["path"].as_str().expect("a node path");
+    let usb = &fingerprint["usb_id"];
+    let spellings: Vec<(SelectorScheme, String)> = vec![
+        (SelectorScheme::Id, "cam:integrated".to_owned()),
+        (SelectorScheme::NodePath, node.to_owned()),
+        (
+            SelectorScheme::BusPath,
+            format!(
+                "bus:{}",
+                fingerprint["bus_path"].as_str().expect("a bus path")
+            ),
+        ),
+        (
+            SelectorScheme::UsbId,
+            format!(
+                "usb:{:04x}:{:04x}",
+                usb["vendor"].as_u64().expect("a vendor id"),
+                usb["product"].as_u64().expect("a product id")
+            ),
+        ),
+        (
+            SelectorScheme::Serial,
+            format!(
+                "serial:{}",
+                fingerprint["serial"].as_str().expect("a serial")
+            ),
+        ),
+    ];
+    assert_eq!(
+        spellings.len(),
+        SelectorScheme::ALL.len(),
+        "a scheme joined the vocabulary and has no sample here"
+    );
+
+    for (scheme, spelling) in spellings {
+        let one = wch.json(&["calibrate", "list", &spelling]);
+        let listed = one["sessions"].as_array().expect("sessions");
+        assert_eq!(
+            listed.len(),
+            1,
+            "{spelling} ({scheme:?}) listed {} session(s): {one}",
+            listed.len()
+        );
+        assert_eq!(
+            listed[0]["task_slug"], "here",
+            "{spelling} ({scheme:?}) listed the other camera's session: {one}"
+        );
+    }
+
+    // The refusal at the same door, and it is what stops the loop above reading as a pass for a
+    // positional that ignores its argument: a spelling no camera can ever match is refused here
+    // exactly as it is everywhere else, naming the whole vocabulary rather than one grammar.
+    let refused = wch.refuses(&["calibrate", "list", "nope:1", "--json"]);
+    let document: Value =
+        serde_json::from_str(&refused.stdout).expect("a failing --json run prints a document");
+    assert_eq!(
+        document["error"]["kind"], "camera_unknown",
+        "{}",
+        refused.stdout
+    );
+    let message = document["message"].as_str().expect("a message");
+    for scheme in SelectorScheme::ALL {
+        assert!(
+            message.contains(scheme.example()),
+            "the refusal does not teach {scheme:?}: {message}"
+        );
+    }
+}
+
+#[test]
+fn a_refusal_from_outside_the_schema_crate_ends_with_its_instruction_too() {
+    // **D13's `IllegalTransition` rendering, held over a producer that is not
+    // `webcam-handler-schema`'s.** `an_illegal_transitions_instruction_is_the_last_thing_it_says`
+    // drives all seven of that crate's producers, and its comment used to say that
+    // `a_refusal_ends_with_the_instruction_its_payload_carries` drives one of the others through
+    // the shipped binary. It does not: that arm runs `photo … -o x.tiff`, whose refusal is
+    // `schema::capture::Sink::writable_format` — the *first* element of the same array. So no
+    // producer outside the schema crate had its `op` driven at all, and the design's sentence
+    // about "every producer" rested on a population of one crate (note **N303**).
+    //
+    // This one is the engine's, reached through the whole stack: `calibrate select` before any
+    // sweep, refused by `engine::session` through `engine::refusal::illegal`, rendered by
+    // `cli_core::report`. The assertions take both halves out of the document the same run
+    // printed rather than pinning today's wording, which is note **N211**'s shape.
+    let scratch = Scratch::new();
+    let wch = Wch::new(&scratch, &["chicony-rgb"]);
+    wch.ok(&["calibrate", "start", "cam:integrated", "--task", "t"]);
+
+    let refused = wch.refuses(&[
+        "--json",
+        "calibrate",
+        "select",
+        "cam:integrated",
+        "brightness",
+        "--task",
+        "t",
+        "--value",
+        "10",
+        "--by",
+        "human",
+    ]);
+    let document: Value =
+        serde_json::from_str(&refused.stdout).expect("a failing --json run prints a document");
+    assert_eq!(
+        document["error"]["kind"], "illegal_transition",
+        "{}",
+        refused.stdout
+    );
+    let from = document["error"]["from"].as_str().expect("a from state");
+    let op = document["error"]["op"].as_str().expect("an instruction");
+    let message = document["message"].as_str().expect("a message");
+    assert!(
+        message.ends_with(op),
+        "the instruction is not the last thing this refusal says, so an agent reading the \
+         sentence gets the condition glued to the end of it: {message}"
+    );
+    assert!(
+        message.starts_with(from),
+        "the refusal no longer says what state it refused from: {message}"
+    );
+    // Not vacuous: an `op` that had become empty would satisfy `ends_with` for nothing.
+    assert!(!op.is_empty(), "the refusal carries no instruction at all");
 }
 
 #[test]

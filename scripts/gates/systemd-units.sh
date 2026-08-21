@@ -28,14 +28,25 @@
 #    `schema::paths::APP_DIR` and `schema::limits::DAEMON_SOCKET_FILE` in the daemon and
 #    written out by hand in the unit; both are read here, so a rename in either crate turns
 #    this red instead of shipping a unit that binds a socket nothing connects to.
-# 4. **`TimeoutStopSec` exceeds `limits::DAEMON_SHUTDOWN_DRAIN_MS`.** This is the pair worth a
-#    predicate. The daemon's stop is an *order* (`daemon::shutdown`) bounded by its own drain
-#    constant; systemd's `TimeoutStopSec` is when it stops asking and sends `SIGKILL`.
+# 4. **`TimeoutStopSec` exceeds the whole of what the *process* takes to stop.** This is the
+#    pair worth a predicate. The daemon's stop is an *order* (`daemon::shutdown`) bounded by its
+#    own drain constant; systemd's `TimeoutStopSec` is when it stops asking and sends `SIGKILL`.
 #    Whichever is smaller is the bound that fires, and if it is systemd's then the ordered
 #    release never runs and every sentence this project writes about *how*
 #    `webcam-handler-daemon` stops describes a path nothing takes. Tune either number alone —
 #    raise the drain, trim the unit — and everything still compiles and every test still
 #    passes.
+#
+#    **The comparison is against the sum and not against the drain alone, and that is a repair
+#    rather than a refinement.** `daemon::shutdown`'s own header carries a four-wait table and
+#    `limits::WEB_LISTENER_STOP_MS`'s doc says outright that its wait "happens *after* that
+#    drain has already run, so it is added to it rather than shared with it" — three of the four
+#    waits are sequential and the fourth needs no bound. This gate compared `TimeoutStopSec`
+#    against `DAEMON_SHUTDOWN_DRAIN_MS` alone and never read the second constant at all, so a
+#    drain raised to 21.5 s left the shipped unit green while systemd's SIGKILL landed exactly
+#    on the ordered teardown the pair exists to protect (note **N304**). Both terms are derived
+#    here now, and the summary line prints the sum with its terms so a reader can see which one
+#    moved.
 #
 # ## What this predicate is not
 #
@@ -66,11 +77,25 @@ drain_ms="$(sed -n 's/^pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = \([0-9_]*\);.*/
     "$root/crates/schema/src/limits.rs" | head -n1)"
 drain_ms="${drain_ms//_/}"
 
-if [[ -z "$socket_file" || -z "$app_dir" || -z "$drain_ms" ]]; then
-    gate_fail "could not read the daemon's own names and bounds out of the tree (DAEMON_SOCKET_FILE=${socket_file:-?}, APP_DIR=${app_dir:-?}, DAEMON_SHUTDOWN_DRAIN_MS=${drain_ms:-?}); a gate that cannot derive them would be comparing the unit files against nothing"
+# The second term of the process's worst case, read the same way and from the same file. It is
+# derived rather than folded into the first because `daemon::shutdown`'s table is what says how
+# many of each there are, and a gate that summed a constant it had not read could not go red on
+# either one moving.
+web_stop_ms="$(sed -n 's/^pub const WEB_LISTENER_STOP_MS: u64 = \([0-9_]*\);.*/\1/p' \
+    "$root/crates/schema/src/limits.rs" | head -n1)"
+web_stop_ms="${web_stop_ms//_/}"
+
+if [[ -z "$socket_file" || -z "$app_dir" || -z "$drain_ms" || -z "$web_stop_ms" ]]; then
+    gate_fail "could not read the daemon's own names and bounds out of the tree (DAEMON_SOCKET_FILE=${socket_file:-?}, APP_DIR=${app_dir:-?}, DAEMON_SHUTDOWN_DRAIN_MS=${drain_ms:-?}, WEB_LISTENER_STOP_MS=${web_stop_ms:-?}); a gate that cannot derive them would be comparing the unit files against nothing"
     gate_finish
 fi
-gate_note "derived from the tree: socket \$XDG_RUNTIME_DIR/$app_dir/$socket_file, shutdown drain ${drain_ms}ms"
+
+# The sum `daemon::shutdown`'s four-wait table names: the ordered teardown, then the web
+# listener's stop, then the blocking pool's join at the runtime's own shutdown — sequential, so
+# they add. The watchdog join is the table's fourth row and carries no bound because it has
+# nothing to wait for.
+worst_ms=$((drain_ms + web_stop_ms + drain_ms))
+gate_note "derived from the tree: socket \$XDG_RUNTIME_DIR/$app_dir/$socket_file, shutdown drain ${drain_ms}ms, web listener stop ${web_stop_ms}ms, process worst case ${worst_ms}ms"
 
 # One directive's value, from the non-comment lines only.
 #
@@ -196,13 +221,16 @@ for service in "${services[@]}"; do
         gate_fail "$name has TimeoutStopSec=$span, which this gate cannot read as a systemd time span; a bound nothing can compare is a bound nothing is checking"
         continue
     fi
-    if ((stop_ms <= drain_ms)); then
-        gate_fail "$name stops the daemon after ${stop_ms}ms and the daemon's own shutdown drain is ${drain_ms}ms (limits::DAEMON_SHUTDOWN_DRAIN_MS); the smaller bound is the one that fires, so this unit would SIGKILL a daemon in the middle of the ordered teardown daemon::shutdown exists to perform"
+    if ((stop_ms <= worst_ms)); then
+        gate_fail "$name stops the daemon after ${stop_ms}ms and the process's own worst case is ${worst_ms}ms (2 x DAEMON_SHUTDOWN_DRAIN_MS + WEB_LISTENER_STOP_MS, the four-wait table in daemon::shutdown); the smaller bound is the one that fires, so this unit would SIGKILL a daemon in the middle of the ordered teardown daemon::shutdown exists to perform"
+    else
+        # Only on the green branch: this line says which bound fires, and printing it beside a
+        # failure said the opposite of the failure above it.
+        gate_note "$name: TimeoutStopSec=${stop_ms}ms > ${worst_ms}ms (${drain_ms} + ${web_stop_ms} + ${drain_ms}), so the daemon's own bound is what fires"
     fi
     pairs=$((pairs + 1))
-    gate_note "$name: TimeoutStopSec=${stop_ms}ms > DAEMON_SHUTDOWN_DRAIN_MS=${drain_ms}ms, so the daemon's own bound is what fires"
 done
-gate_checked "$pairs" "(TimeoutStopSec, DAEMON_SHUTDOWN_DRAIN_MS) pair(s), each re-derived from the crate rather than transcribed"
+gate_checked "$pairs" "(TimeoutStopSec, the four-wait worst case) pair(s), each term re-derived from the crate rather than transcribed"
 gate_require_nonzero "$pairs" "stop-timeout pairs"
 
 gate_finish

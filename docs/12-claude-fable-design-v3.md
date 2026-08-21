@@ -594,7 +594,10 @@ at v3:
   (`ContainerRefusal { container, negotiated, carried_by }`) — so the message never
   attributes one list to another's owner again [N129, N138, N211].
 - **`IllegalTransition` renders `"{from}: cannot {op}"`** — the instruction ends the
-  sentence, for all eleven producers whose `op` is one (docs/11 L29; N212).
+  sentence, for **every** producer whose `op` is one, which is the rule rather than a count
+  of them; this bullet said "all eleven" while the tree carried twenty-two construction sites
+  in six crates, and the arms that hold it now derive their population instead of listing it
+  (docs/11 L29; N212, N303).
 - **The registry reaches a command line as a document with an exit code per kind** (owner
   ruling, 2026-08-15; N124, N127, N128): a failing `--json` run prints
   `schema::error::Failure` — the D13 kind in the registry's own serde spelling, the
@@ -1148,7 +1151,11 @@ entry and never a hidden one, and the gate counts and names every mark it honour
 row may be a pin without a consumer only if it says so and names its disposition —
 carrying one silently is the L32 defect this table exists to end. Versions are pins-at-adoption; licenses as verified at adoption; the *scope*
 column names the crates whose edge it is, because an unscoped row is how `caps` went
-unregistered inside the one crate whose dependency list most needs reviewing:
+unregistered inside the one crate whose dependency list most needs reviewing — and it is
+reconciled rather than trusted: `dependency-registry-sync.sh` requires a cell to name every
+member with a **normal** edge on the crate, the direction six rows were wrong in on the day it
+was first read (note **N306**), while a cell naming a member the crate reaches transitively
+stays prose:
 
 | Crate | Pin | License | Scope | Why |
 |---|---|---|---|---|
@@ -1162,23 +1169,23 @@ unregistered inside the one crate whose dependency list most needs reviewing:
 | `axum` | 0.8.9 | MIT | daemon | the web listener |
 | `tower` | 0.5.3 | MIT | daemon | the layer vocabulary axum composes (registered at v3 — N133) |
 | `tower-http` | 0.6.11 | MIT | daemon | compression on the asset routes (version corrected at v3 — N133) |
-| `jsonrpsee` | 0.26 | MIT | api (macros), client (async-client) | the one wire surface; minor pinned workspace-wide |
+| `jsonrpsee` | 0.26 | MIT | api (macros, client-core, server-core), client (async-client), daemon (server-core; client-core dev) | the one wire surface; minor pinned workspace-wide |
 | `jsonrpsee-server` | 0.26 | MIT | daemon | the server by its own package name, never `jsonrpsee/server` — a feature unifies workspace-wide and would put hyper in `api`'s tree [N38] |
 | `soketto` | 0.8.1 | Apache/MIT | client (ship), daemon (dev) | one WebSocket implementation on both ends |
 | `futures-timer` | 3.0.4 | MIT/Apache | (jsonrpsee's) | carried visibly; the lock pins it |
 | `hyper` | **(lock only)** | MIT | daemon (via axum/jsonrpsee-server) | never a direct edge; the walls hold it to one crate |
 | `rust-embed` | 8 | MIT | web | asset embedding; `debug-embed` on [N77]; framework features declined |
 | `serde` / `serde_json` | 1 | MIT/Apache | workspace | the four masters' one serialization |
-| `schemars` | 1 | MIT | schema, api | the committed JSON Schema bundle |
+| `schemars` | 1 | MIT | schema, api, xtask | the committed JSON Schema bundle |
 | `zune-jpeg` | 0.5 | MIT/Apache/Zlib | imaging | JPEG decode |
 | `yuv` | 0.8 | BSD-3/Apache | imaging | YUYV/NV12 conversion [N201's length rule] |
-| `image` | 0.25, `default-features=false, features=["png","jpeg"]` | MIT/Apache | imaging | PNG/JPEG encode; the `avif` default stays off (gate-held) |
+| `image` | 0.25, `default-features=false, features=["png","jpeg"]` | MIT/Apache | imaging, fake, testkit (cli, client, v4l2 dev) | PNG/JPEG encode; the `avif` default stays off (gate-held) |
 | `png` | 0.18 | MIT/Apache | imaging | PNG encode path |
 | `imageproc` | 0.27 | MIT | imaging | Laplacian and friends (D8 metrics) |
 | `image-compare` | 0.5 | MIT | imaging | SSIM corroborator; the conditional adoption's measurement cleared at P8b — its own `image` edge is `default-features = false`, the resolved graph stays clean, and six permissive packages join the lock (note **N260**, which also names the owned-SSIM exit) |
 | `little_exif` | 0.6 | MIT/Apache | imaging | APP1 bytes only; our splice writes them [PF:16] |
 | `y4m` | 0.8 | MIT | (pin, not linked) | measured and declined at P6b — the module writes its own 51-line sink [N107]; the pin stays by that entry's ruling, removal being the owner's |
-| `clap` | 4 | MIT/Apache | cli-core | the one command tree |
+| `clap` | 4 | MIT/Apache | cli-core, daemon, priv, xtask | the one command tree |
 | `comfy-table` | 8 | MIT | cli-core | listings |
 | `indicatif` | 0.18 | MIT | cli-core | sweep progress |
 | `anstream`/`anstyle` | 1.0.0 / 1.0.13 | MIT/Apache | (clap's; pins) | clap 4's own color stack, carried visibly like `futures-timer`; no crate names either directly |
@@ -1189,9 +1196,9 @@ unregistered inside the one crate whose dependency list most needs reviewing:
 | `listenfd` | 1.0.2 | Apache-2.0 | daemon | LISTEN_FDS validation, four fifths of it [N181] |
 | `tempfile` | 3 | MIT/Apache | engine | the atomic write's temp file |
 | `fd-lock` | 4 | MIT/Apache | engine | the one store lock |
-| `uuid` | 1 (v7) | MIT/Apache | schema | session ids |
+| `uuid` | 1 (v7) | MIT/Apache | schema, engine, cli-core, cli, client, daemon (v4l2 dev) | session ids |
 | `jiff` | 0.2 | Unlicense/MIT | schema | timestamps; RFC 3339 on disk |
-| `camino` | 1.2.5 | MIT/Apache | schema | UTF-8 paths on the wire and on disk |
+| `camino` | 1.2.5 | MIT/Apache | schema, engine, cli, cli-core, client, daemon, fake, testkit, v4l2, xtask | UTF-8 paths on the wire and on disk |
 | `base64` | 0.23 | MIT/Apache | api only | D10's transport encoding, one home |
 | `caps` | 0.5.6 | MIT/Apache | priv (**dev-only**) | ambient-capability handling in the blessed helper (registered at v3 — N133; the crate with the strongest reason to be reviewed is the one that was unlisted) |
 | `kamadak-exif` | 0.6 | BSD-2 | imaging (dev) | the independent EXIF read-back oracle |
@@ -1220,7 +1227,7 @@ row — N111's honest note) and D16's fault:
 |---|---|---|---|
 | `CameraBackend`/`Camera` (T1/T2) | `webcam-handler-v4l2` | `webcam-handler-fake` | device-gone mid-stream, EBUSY, clamp-on-write [PF:6], INACTIVE flips [PF:3], control-read-declined [N195], settle-never-converges, frame timeout, **frame gap (v3, D16)**, hotplug add/remove, watch unavailable/fails |
 | Session store (D9) | XDG state dir | temp-dir store | full disk, lock held, torn `log.ndjson` line, foreign `schema_version` |
-| Recording sink (D7) | files on disk | scripted `Files` double | open refused, write refused, sync refused |
+| Recording sink (D7) | files on disk | scripted `Files` double | create refused, writes refused, seek refused, flush refused |
 | Clock/settle | real time | `SteppedClock` / `FrozenClock` [N67] | deadline expiry during settle; a deadline that cannot expire |
 | RPC transport | UDS/WS | in-memory jsonrpsee | disconnect mid-subscription, undecodable notification [N70] |
 

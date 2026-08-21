@@ -19304,6 +19304,12 @@ apiece — and a predicate walks every product `.rs` requiring it to be in `exam
 one. That is `unsafe-scope.sh`'s shape for a crate-root attribute that cannot be uniform, and it is
 what turns this paragraph from maintenance into a check.
 
+**Retired on 2026-08-20 by `scripts/gates/mutation-scope-is-decided.sh`, and the prediction above
+came true three times first** (note **N302**): `imaging/stream_stats.rs`, `imaging/compare.rs` and
+`engine/facade.rs` all landed across P8 in neither list. The markers live in `.cargo/mutants.toml`
+beside the paragraphs they index rather than in the sources they name — the argument for that choice
+is in N302 and in the scope file itself — and the predicate reads only the path.
+
 ## N163 — `oracle-rung-accounting.sh` asserted docs/9's derived-population rule in its header and transcribed its fixtures
 
 **Doc:** docs/9's derived-population rule — populations are walked, never transcribed; AGENTS rule 3
@@ -20091,6 +20097,13 @@ Two repairs, and the second is why the first is worth having:
   (`DAEMON_SHUTDOWN_DRAIN_MS` again). Twice the drain plus two seconds, against systemd's 90 s
   `TimeoutStopSec` — still the comparison that chooses the constant, and now an arithmetic a
   reader can do.
+
+  **Corrected on 2026-08-20 (note N304), because the number this sentence reasons against is
+  not the one this repository ships.** `packaging/systemd/wchd.service` sets
+  `TimeoutStopSec=45s`, half of systemd's default, so the comparison is 42 s against 45 s and
+  not 42 s against 90 s. The conclusion survives — the daemon's own bound is still the one that
+  fires — but the margin is three seconds rather than forty-eight, and nothing reconciled the
+  two until `systemd-units.sh` learned to form the sum.
 
 `a_blocking_pass_that_will_not_end_does_not_hold_this_process_open` is what goes red: a
 `spawn_blocking` closure that announces itself and then parks for as long as the test likes,
@@ -28165,3 +28178,392 @@ directions: a twin stricter than the machine (the removal count), a recipe loose
 missing loss assertion), a twin and a recipe holding different constants, a double answering a
 different error kind than the backend it stands in for, and a search predicate that excluded the
 topology its own title named.
+
+## N302 — Every product module is in the mutation floor or excluded from it, and now something says which
+
+**Date:** 2026-08-20. **Subject:** `.cargo/mutants.toml`'s two lists,
+`scripts/gates/mutation-scope-is-decided.sh` and its case file, and the three modules that had
+landed in neither. **Class:** the residual N162 recorded, met in the words it asked for.
+
+`.cargo/mutants.toml` states its own law twice — *"an exclusion that is not a decision with a
+date is an oversight wearing one"* — and spells its exclusions as **absence** from
+`examine_globs`, deliberately, so that widening the floor is adding a line rather than deleting
+one. The cost of that spelling is that a module nobody has thought about and a module somebody
+argued out of scope look identical from the outside. The file said so itself, in the paragraph it
+used to end on: *"nothing checks that the two lists together cover the tree … the next module
+added to `crates/` will be in neither list again on the day it lands."*
+
+It did, three times. `crates/imaging/src/stream_stats.rs` (D16's delivery accumulator),
+`crates/imaging/src/compare.rs` (D17's comparison core) and `crates/engine/src/facade.rs` (D18's
+blessed composition) all landed across P8 with no line in either list, and nothing in this
+workspace could go red on it. Two other files added in the same window — `schema/src/selector.rs`
+and `daemon/src/http/session_photo.rs` — were absorbed by standing crate blankets, which is what
+makes the three visible as a class rather than as three oversights: the blanketed crates were
+decided in advance and `crates/imaging/` and `crates/engine/` are written out module by module.
+
+**Three dispositions, all with a date, and no widening.** `stream_stats.rs` and `compare.rs` join
+the **owed** block: both are folds over values with suites and G8 criteria already on them, and
+both belong in on the merits. `facade.rs` joins the **out** block on `xtask/`'s argument rather
+than on `engine`'s shell argument — `cli-parity.sh`, `binary(facade_equivalence)` and
+`facade-is-the-composition.sh` pin its answers byte for byte against the direct CLI in both
+directions, which is more than a mutation floor promises. The cost of the alternative was measured
+with the shipped tool rather than estimated, so that the session which does widen is choosing
+against a number: `cargo mutants --list` reports **1131** mutants for today's scope and **1230**
+with the three files added — 29, 51 and 19. A widening lands *with* its run and with every
+survivor triaged (P4d, P6a, B8 and note **N209** all say so), and this session had no floor budget.
+
+**The gate is the half that stops the class recurring.** `mutation-scope-is-decided.sh` walks the
+`src/` tree of every workspace member `cargo metadata` reports and requires each file to be in
+`examine_globs` or covered by a `scope-out: <path> — <reason>` marker, with four more claims
+around it: no `examine_globs` entry outlives the module it named, no marker outlives the module it
+excluded, no *file* marker names a path `examine_globs` also names (a file in both lists is as
+undecided as a file in neither), and every marker carries a reason. Run against HEAD's unrepaired
+scope it names 101 files, the three among them.
+
+**The register lives in `.cargo/mutants.toml` and not in the sources it names**, and both homes
+were considered. `unsafe-scope.sh`'s residual register sits inside the module it describes because
+that module is where the obligation is discharged; here the argument for every exclusion is
+already written in the scope file, in paragraphs a reader reads top to bottom, so a marker beside
+its own paragraph is an *index* of it and a marker four directories away is a second copy that can
+disagree with it (design §2.10). The alternative also puts mutation-floor bookkeeping into every
+excluded product module and makes an author who has never run the floor responsible for
+remembering it exists. Thirty-six markers cover a hundred and one files because a directory marker
+is a blanket where the prose already blankets — `crates/daemon/` except its three `http` folds,
+`crates/backends/v4l2/` except `hotplug.rs` — and names files where the prose names files, which is
+why a new module under `crates/engine/` is red and a new module under `crates/daemon/` is not.
+
+**What it deliberately does not do:** it reads only the path. Comparing a marker's reason against
+the paragraph above it would give one law two homes, and the reason cell is for the reader.
+Integration suites under `crates/*/tests/` are outside the population, stated rather than assumed:
+cargo compiles them only under `cargo test`, and mutating a test asks whether the tests test the
+tests, which is note **N15**'s lesson.
+
+**And the consequence of reading only the path, said plainly: a blanket is decided by existing.**
+`scope-out: crates/schema/ — derives and data; its laws are asserted by the battery` decides
+twenty modules on a sentence that was true of that crate before `selector.rs` became D14's one
+parser and before `profile.rs` took D15's identity/device partition and `DeviceProfile::compare`.
+Neither is derives and data, and both are folds of the shape the **owed** block admits
+— the block already carries `engine/resolve.rs` ("D1's prefix resolution … a fold") and
+`engine/profile.rs` ("the T3 invariant/volatile split"), which are the *engine* homes of those
+same two laws. So this predicate turns "in neither list" red and leaves "in a list on a reason
+that has stopped describing its modules" invisible, which is a weaker rule than the file's own
+law reads as. Recorded rather than repaired here because the repair is a disposition and
+dispositions are the owner's: either the two files get dated entries in the owed block with
+their `cargo mutants --list` counts, the way the three P8 arrivals did, or line 102's reason is
+rewritten to be true of the crate as it stands and the marker indexes that. The one thing that
+must not happen is the third option — leaving a marker asserting a claim its author believes
+false, which is the oversight wearing a decision's clothes with the decision's date on it.
+docs/15's honest-limits list carries the same sentence for a reader who never opens this file.
+
+**Retires when:** nothing retires it; this *is* N162's *Retires when*, which asked for exactly a
+canonical marker per exclusion and a predicate walking every product `.rs` for one. What is still
+owed is the run: five modules sit in the owed block and the floor has never been executed over any
+of them.
+
+## N303 — One vocabulary, five copies, and a committed guide that said two things about `<CAMERA>`
+
+**Date:** 2026-08-20. **Subject:** `schema::selector`'s `SelectorScheme::ALL` and the four
+hand-written transcriptions of it; `cli_core::CameraArg` and `calibrate list`'s positional;
+`xtask::guide`'s placeholder glossary; `daemon::server`'s recording fallback prose;
+`schema::error`'s `IllegalTransition` population. **Class:** one home per law (design §2.10),
+measured at the doors rather than at the function.
+
+D14 gives the vocabulary one home: `SelectorScheme::ALL`, with `example()` per scheme and
+`vocabulary()` rendering the sentence a refusal carries. Four readers wrote the five spellings out
+by hand instead, and a sixth scheme would have joined `ALL` and none of them.
+
+1. **`CameraSelector::deserialize`** — inside the one home, a hundred and ninety lines below
+   `vocabulary()`. The only arm on that door asserted `is_err()` and never read the message, while
+   its sibling ninety lines up walks `ALL` against the *parser's* refusal. One door walked, the
+   other not.
+2. **`CameraArg`'s clap help** — a doc comment, so a literal by construction. It reaches a
+   terminal and is baked into `docs/agent-guide.md` at every camera-taking verb.
+3. **`xtask::guide`'s `<CAMERA>` glossary** — D1's grammar, four spellings short of D14, landing
+   at line 34 of the committed guide and contradicting the five-row table generated from `ALL` at
+   line 494 of the same file. One artifact, written for an unattended agent, saying two different
+   things about the same placeholder; a program takes the first one it meets.
+4. **`daemon::server`'s prose** — "D14's four other spellings do not reach that fallback", a count
+   of `ALL` in a comment, falsified by a sixth scheme.
+
+**The repairs are all at the reader's end.** The wire's expectation is built from `vocabulary()`;
+the clap help is `cli_core::camera_arg_help()`, walking `ALL` and backticking each spelling because
+that string has two readers (a terminal and a Markdown table cell, where a bare `<id>` is an HTML
+tag) — the same split `xtask`'s own selector table already runs on. Both clap help forms are set
+explicitly, which is what keeps the Rust-facing doc comment and its rustdoc links out of a terminal
+(notes **N123**, **N249**). The glossary points at the section instead of teaching a grammar, and
+the daemon's sentence is now about `CameraSelector::as_id` answering `Some` for one scheme, which
+is what the code below it does.
+
+**Three arms hold it, and each walks `ALL` against what a reader is actually shown** rather than
+against the function that renders it: the wire's refusal text, the *rendered* clap help of every
+`CAMERA` argument on both roots (a `#[arg(help = …)]` that stopped being applied would leave the
+function correct and the terminal wrong), and the emitted guide. A fourth is a gate:
+`agent-guide-current.cases.sh` had eight arms and none of them seeded a v3 population — its
+surface-drift arm seeds a P6-era flag's value name — so `fail_case_the_selector_vocabulary_moved_
+and_the_guide_did_not` renames one scheme's sample spelling and watches the committed guide go
+stale in the two places it reaches.
+
+**`calibrate list` was the one positional that could fork, and nothing could see it.** Nineteen
+camera-taking verbs flatten `CameraArg`, whose `selector()` is `schema::selector::parse`; this one
+is optional, clap flattens a struct rather than an `Option` of one, and it therefore parses on a
+line of its own. The only test that had ever driven it passed `cam:obsbot` — an `Id` spelling
+`CameraId::parse` accepts identically — so replacing that line with an id-only parser left the
+whole workspace green while `calibrate list bus:3-4:1.0` started refusing. Watched failing before
+it was called done. Its spellings are read out of the committed profile the fake replays and not
+out of this build's own answer about the camera, because a test that asked `info` for the bus path
+and then asked `calibrate list` about it would be asking one resolver to agree with itself
+(**N252**).
+
+**The same reading found a second population that was a count rather than a rule.** D13's
+`IllegalTransition` bullet said "for all eleven producers", `schema::error`'s doc said "eleven
+producers across five crates", and the arm that holds the rendering asserted `seen == 5, "this
+crate's producers are five"` over a hand-listed array. The tree holds twenty-two construction sites
+in six crates, and two of `webcam-handler-schema`'s own seven were undriven — `server_path`'s
+relative-path arm and `budget_ms`'s zero-duration arm. Worse, the array's comment claimed that a
+CLI arm drives a producer from another crate; that arm runs `photo … -o x.tiff`, whose refusal is
+the *first element of the same array*. So no producer outside the schema crate had its `op` driven
+at all. Both counts are gone (a prose count of code is a claim something reconciles or it is not
+made — **N153**, **N158**), the array now reconciles against the construction sites read out of the
+crate's own source, and an engine producer is driven end to end through the shipped binary by
+`a_refusal_from_outside_the_schema_crate_ends_with_its_instruction_too`.
+
+**Retires when:** nothing retires it. What generalises is where to look: a vocabulary with one home
+is not one home until every *reader* derives from it, and the readers that transcribe are the ones
+whose medium the home does not speak — a doc comment, a table cell, a sentence in a header.
+
+## N304 — The pair gate compared one term of a sum it was written to compare
+
+**Date:** 2026-08-20. **Subject:** `scripts/gates/systemd-units.sh`'s fourth claim,
+`limits::DAEMON_SHUTDOWN_DRAIN_MS` and `limits::WEB_LISTENER_STOP_MS`,
+`packaging/systemd/wchd.service`'s `TimeoutStopSec`, and note **N174**'s arithmetic.
+**Class:** a bound checked against a term rather than against the total it is a term of.
+
+`daemon::shutdown`'s header writes the process's stop as a table of four waits, and
+`WEB_LISTENER_STOP_MS`'s own doc says outright that its wait "happens *after* that drain has
+already run, so it is added to it rather than shared with it". Three of the four are sequential:
+the ordered teardown (`DAEMON_SHUTDOWN_DRAIN_MS`), the web listener's stop
+(`WEB_LISTENER_STOP_MS`), and the blocking-pool join at the runtime's own shutdown
+(`DAEMON_SHUTDOWN_DRAIN_MS` again). Forty-two seconds against the forty-five the shipped unit sets.
+
+`systemd-units.sh` existed for exactly this pair and compared `TimeoutStopSec` against
+`DAEMON_SHUTDOWN_DRAIN_MS` **alone**; `WEB_LISTENER_STOP_MS` appears nowhere in `scripts/`.
+Measured rather than reasoned: with the drain raised to 21 500 ms in a scratch tree the gate
+answered `PASS … 3 items examined, 0 named skip(s)` and printed *"TimeoutStopSec=45000ms >
+DAEMON_SHUTDOWN_DRAIN_MS=21500ms, so the daemon's own bound is what fires"* — while the four waits
+sum to 21.5 + 2 + 21.5 = 45 s and systemd's SIGKILL lands exactly on the ordered teardown the pair
+exists to protect. Nothing else would have caught it: `limits.rs` carries a `const _` assertion
+tying the web bound to the drain, and that assertion says nothing about the unit.
+
+Both terms are derived from `limits.rs` now and the comparison is against the sum, printed with its
+terms so a red run says which one moved. Three arms hold it, and the first is the measurement:
+`fail_case_the_units_bound_no_longer_exceeds_what_the_process_takes_to_stop` seeds 21 500 — inside the
+old bound and outside the new one, so it is red only because the sum is what is compared —
+`fail_case_the_web_listeners_stop_alone_pushes_the_process_past_the_units_bound` moves the second
+term instead, and `fail_case_the_web_listeners_bound_cannot_be_read_out_of_the_tree` is the
+derivation's own inverse, because a constant this gate cannot read is a sum it cannot form.
+
+**Two prose halves were wrong in the same direction and are repaired with it.**
+`DAEMON_SHUTDOWN_DRAIN_MS`'s doc said the worst case is "still under a fifth of systemd's
+`TimeoutStopSec`, which is the comparison that decides this constant" — a fifth of systemd's 90 s
+default is 18 s, and 42 s is not under it; the number that decides the constant is the 45 s **this
+repository ships**, against which 42 s is 93 %. N174 reasons "against systemd's 90 s
+`TimeoutStopSec`" for the same reason and is corrected in place rather than deleted. The conclusion
+survives both repairs — the daemon's own bound is still the one that fires — but the margin is
+three seconds, not forty-eight, and that is a fact somebody raising either constant needs.
+
+**Retires when:** nothing retires it. The shape is worth the entry: when a design writes a worst
+case as a table of terms, the gate that protects it has to compare the *table*, and a gate that
+compares one term prints a reassuring sentence about the wrong number.
+
+## N305 — A Proves bullet whose second half the product has no verb for
+
+**Date:** 2026-08-20. **Subject:** docs/13's P9c "Proves (browser claims)" list,
+`crates/web/assets/calibrate-flow.js`'s `flow.session`, `calibration.js`'s session list, and the
+daemon's `session_conflict` refusal. **Class:** a plan sentence naming a claim nothing can drive.
+
+P9c promised "the CLI can drive a session the page started **and vice versa** (one state machine,
+two hands — asserted)". The first half is true of the product and unasserted in the rung; the
+second half is not true of the product at all. `flow.session` is assigned in exactly one place, from
+`wch_calibrate_start`'s answer, and cleared on every camera switch; `calibration.js`'s session list
+hands a clicked session to `showSession`, which reads the document and paints it and never gives it
+to the flow. So a page cannot pick up a session the CLI opened.
+
+Driven against a live fake daemon over UDS to be sure of both halves: `calibrate start … --task
+twohands` on one connection with `calibrate plan` and `calibrate list` on two others all answered,
+so the CLI direction works and is an assertion gap; a second `calibrate start` for the same camera
+and task answered `session_conflict` with *"resume it, or finish it before starting another"* —
+an instruction the shipped page has no verb to carry out. Thirty-seven browser claims, and none
+names the CLI.
+
+The bullet is struck rather than left standing, because a Proves bullet nothing can drive is the
+state docs/9's derived-population rule exists to prevent. What is owed, together and in one
+sub-milestone: an adopt path in the flow (`flow.session = {kind: "id", id}` from the list the page
+already paints, which is the one assignment), and one browser claim that crosses the hands — start
+with `webcam-handler-client` from the rung's harness, adopt in the page, sweep and select there,
+read the `selector: human` record back with the client, then the reverse. The first direction's
+assertion gap is owed with it, since a claim that starts a session from the client is what makes
+"one state machine, two hands" a measurement rather than a belief about a shared wire.
+
+**Retires when:** the adopt path ships and the crossing claim is in `claims.json`, at which point
+docs/13's sentence goes back in whole.
+
+## N306 — The column §2.8 added to stop an edge hiding was itself hiding six
+
+**Date:** 2026-08-20. **Subject:** design §2.8's registry table, its *Scope* column, and
+`scripts/gates/dependency-registry-sync.sh`'s fifth claim. **Class:** a column nothing read,
+in a table a predicate had already been written for.
+
+§2.8 gives the column its own reason, in the sentence above the table: it "names the crates whose
+edge it is, because an unscoped row is how `caps` went unregistered inside the one crate whose
+dependency list most needs reviewing" — the privileged helper. `dependency-registry-sync.sh`
+landed at P7a reconciling two of the five columns, and its header said so honestly: *"It does not
+verify a licence, a scope or a reason. Columns 3, 4 and 5 are read past."* A column with a stated
+purpose, a stated non-check, and no reader is a column that drifts, and this one had.
+
+**Measured with `cargo metadata`, over the normal (non-dev, non-build) dependency edges of every
+workspace member, six rows understated a real edge:**
+
+- `clap` said `cli-core`; `webcam-handler-daemon`, `webcam-handler-priv` and
+  `webcam-handler-xtask` all declare it. The privileged helper is the crate the column's own
+  sentence is about, so the column was silent about exactly the case it was added for.
+- `jsonrpsee` said `api (macros), client (async-client)` and not the daemon — which is the one
+  edge note **N38** is about, the whole reason `jsonrpsee-server` is a separate package rather
+  than a feature. (The cell now also spells the daemon's features, because `server-core` shipped
+  and `client-core` is its dev edge, and "client, dev" was wrong about both.)
+- `camino` said `schema`; ten members declare it.
+- `uuid` said `schema`; six declare it, and `v4l2` has a dev edge besides.
+- `image` said `imaging`; `fake` and `testkit` declare it too, with three more dev edges.
+- `schemars` said `schema, api`; `xtask` declares it as well.
+
+**Claim 5 is one-directional and the predicate's header says why.** What is checked is that a
+row names every workspace member with a normal edge on the crate. The converse — that a member a
+cell names really declares the crate — is deliberately not checked, because several cells name a
+member the crate reaches *transitively* and say so in prose: `tokio`'s writes "api (via
+jsonrpsee — N5)" and `hyper`'s writes "daemon (via axum/jsonrpsee-server)". Both are true
+statements about the resolved graph and neither is a manifest edge, and a rule that refused them
+would push the prose out of the column and lose what the column is for. The residual is written
+in the header rather than left for a reader to infer.
+
+**The population is the rows whose cell names a member at all**, and the rest are a counted,
+named skip rather than a silence (AGENTS rule 3). `workspace`, `roots`, `(pin, not linked)`,
+`(jsonrpsee's)` and `(clap's; pins)` are legitimate cells naming nobody, and a predicate that
+read them as "names no member, therefore understates every member" would demand that `serde`'s
+row list twelve crates. Member short names come from `cargo metadata` rather than from a list in
+the script, so a renamed crate renames what this reads, and each is matched on its own word —
+`cli` does not match inside `cli-core`.
+
+**Retires when:** nothing retires it. What generalises is the shape: a predicate that lands
+naming the columns it reads past has written its own next work item, and the column with the
+loudest stated purpose is the one to read first — a purpose is what makes a drift expensive, not
+what prevents it.
+
+## N307 — A reconciliation that replaced a written count could see one spelling of a producer, at one depth
+
+**Date:** 2026-08-20. **Subject:** `schema::error`'s
+`an_illegal_transitions_instruction_is_the_last_thing_it_says` and the
+`illegal_transition_sites` walk note **N303** landed beside it. **Class:** a ban on a defect
+naming one spelling of it rather than the class (rubric A17; notes **N249**, **N250**).
+
+N303 replaced `assert_eq!(seen, 5, "this crate's producers are five")` with a population read out
+of the crate's own source, on the argument that a number written into an assertion is a number a
+sixth producer joins neither. The walk that landed did the job for one spelling of a producer at
+one directory depth: `std::fs::read_dir` over `crates/schema/src`, no recursion, counting the
+literal `"Error::IllegalTransition {"`. Both halves are the shape the rule forbids, and the
+consequence is worse than a missed check, because the assertion is an **equality**: a site the
+walk cannot see moves neither `seen` nor `sites`, so the reconciliation stays green on exactly
+the state it was written to catch.
+
+Both were seeded and watched. A producer written `Err(IllegalTransition { op, from })` under a
+`use crate::error::Error::IllegalTransition` — the ordinary Rust spelling, and the one the
+variant's *declaration* eleven hundred lines up uses — was invisible; so was the identical
+producer placed in `crates/schema/src/newmod/producer.rs` and declared into the crate. The same
+batch's `mutation-scope-is-decided.sh` walks recursively for the same job one file over, so the
+recursive shape was in hand.
+
+**The repair walks the class in both dimensions**: a stack over `read_dir` for the tree, and the
+variant name rather than the `Error::`-qualified path for the spelling, with comment lines
+dropped first because the crate's doc comments name the variant a dozen times. Both seeds go red
+now, and the flat `Error::`-prefixed seed the original inverse arm used still does.
+
+**A destructuring pattern is counted as a producer, deliberately, and the message says so.** The
+two readings cannot be told apart by a substring, and the honest form when two readings both
+refuse is to name the pair rather than guess (note **N250**): one of them is a producer owed an
+arm, the other is a walk owed a narrowing, and the sentence the arm goes red on hands a reader
+both. This crate's product code has no such pattern today.
+
+**One more thing this walk gets right by accident and the demonstration nearly got wrong.** The
+first attempt to seed the bare spelling appended it to the end of `schema/src/slug.rs`, which
+lands *after* that file's `#[cfg(test)]` marker — so the walk correctly excluded it as test code
+and the seed proved nothing. A red-on-inverse that is red for the wrong reason and a green that
+is green for the wrong reason are the same mistake; the seed was moved above the marker and the
+arm went red for the reason it is about.
+
+**Retires when:** nothing retires it. What generalises: when a hand-written count is replaced by
+a derived population, the derivation is the new subject and it needs its own both-direction proof
+— and for an **equality** between a walk and an arm list, a blind spot in the walk is silent in
+both terms at once, which is the one failure shape the assertion's form cannot report.
+
+## N308 — N303's repair stopped one reader short, in the section a failing agent reaches
+
+**Date:** 2026-08-20. **Subject:** `xtask::guide`'s failure table (`camera_unknown`,
+`camera_ambiguous`) and its selector section's opening sentence; `docs/agent-guide.md`.
+**Class:** one home per law, measured at the readers rather than at the function (N303's class,
+one reader further along).
+
+N303 found four hand-written copies of D14's five spellings and repaired all four. Two more
+readers in the same generated document were not looked at, and both were found by the review of
+that batch.
+
+**The failure table's `Do` column still taught D1's grammar, at the two rows a caller meets when
+a spelling has just failed.** AGENTS says that column is payload tested by driving the claim
+(rubric A15), and neither row was driven. Measured through the shipped binary over the committed
+corpus:
+
+- `webcam-handler-cli --backend fake --profile corpus/profiles/chicony-rgb.json info /dev/video7
+  --json` answers `camera_unknown`, exit 13, message `no camera matches "/dev/video7"` — the
+  spelling parsed and the *listing* is what had no answer. The row said *"ids come from what the
+  device says about itself, not from `/dev/video0`"*, two hundred lines below a generated table
+  listing `/dev/videoN` as one of five spellings this build takes, and above an `info
+  /dev/video0` that answers with the camera. One document, two grammars, and the wrong one is
+  the one an agent reaches when it is already failing — and PF:22 is the documented case where
+  the distinction is the whole answer.
+- The same binary over both Chicony halves answers `camera_ambiguous` for `usb:04f2:b83c`, exit
+  14, with `candidates` naming both ids. The row said *"use a longer prefix or a whole id"*.
+  There is no prefix in a VID:PID and no way to lengthen one; D12/D14 call this shape the normal
+  case somewhere and pin it on this exact committed pair, and the guide's own selector section
+  already gives the right remedy two hundred lines up.
+
+**The second reader was a count.** The selector section's opening sentence read *"the other
+four"* — `SelectorScheme::ALL.len() - 1` transcribed into the one section whose provenance line
+says it is generated from that vocabulary. Not false today; false the day D14 grows, in the
+document written for the consumer with no hands. The same batch removed exactly such a count from
+`schema::error`'s doc citing **N153** and **N158**.
+
+**Both repairs are driven.**
+`the_two_selector_rows_of_the_failure_table_send_a_reader_where_this_build_really_sends_them`
+runs both refusals through the shipped binary and holds each remedy to the *run's own document*
+rather than to today's wording: the ambiguous row must name a field the refusal really carries
+(`candidates`, read off the printed object rather than off a literal), the unknown row must not
+deny a spelling this build resolves — with the resolving run beside it, so that a build which
+stopped taking node paths reddens that line instead of blessing the old sentence — and both must
+send a reader to *How to name a camera* rather than teach a grammar.
+`the_selector_sections_prose_carries_no_count_its_own_table_can_falsify` asserts one table row
+per scheme and then bans **any** cardinality word from the prose above it, rather than today's:
+a walk that banned only "four" would pass "the other five" on the day a sixth scheme landed,
+which is the same defect one scheme later. Each was watched red on the sentence it is about
+before it was called done. The whitelist entry in `crates/cli/tests/agent_guide.rs` that had
+blessed `/dev/video0` as *"a device node the `camera_unknown` row names in order to say that ids
+do not come from it"* is gone with the claim it excused.
+
+**What is not repaired here, and it is the owner's:** the `<CAMERA>` glossary row now points at
+the section instead of giving a substitutable value, in the one table whose header says to
+substitute one, and the per-verb argument tables and `--help` lost their concrete samples
+(`cam:obsbot-tiny-3`, `usb:04f2:b83c`) for the metasyntactic spellings `ALL` renders. That is one
+home bought with one inference for a reader with no hands. The exit, if the owner wants it, is a
+`sample()` beside `SelectorScheme::example()` and a help string that renders `example (sample)`
+— still one home, and the concrete spelling back.
+
+**Retires when:** nothing retires it. What generalises is N303's own lesson applied to N303: the
+readers a vocabulary's home does not speak to are the ones that transcribe, and a *generated*
+document is not proof they were all found — the failure table and the selector table are both
+generated, from the same crate, and disagreed with each other.

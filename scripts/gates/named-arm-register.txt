@@ -52,6 +52,7 @@ license-allowlist
 lint-posture
 luma-has-one-home
 msrv-sync
+mutation-scope-is-decided
 mutation-verdict
 no-external-fetch-in-web
 no-frame-bytes-in-repo

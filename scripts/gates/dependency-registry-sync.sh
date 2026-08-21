@@ -84,10 +84,15 @@
 #     `feature-posture.sh` are what read the *resolved* graph, and the honest split is that this
 #     predicate reconciles two declarations while those two reconcile a declaration against a
 #     resolution.
-#   * **It does not verify a licence, a scope or a reason.** Columns 3, 4 and 5 are read past. The
-#     licence claim is cargo-deny's (`license-allowlist.sh`), the scope column is prose about which
-#     crates own an edge, and nothing checks that a "why" is true. A row can be right about its
-#     crate and its version and wrong about everything else and this stays green.
+#   * **It does not verify a licence or a reason, and it verifies the scope column in one
+#     direction only.** Columns 3 and 5 are read past: the licence claim is cargo-deny's
+#     (`license-allowlist.sh`) and nothing checks that a "why" is true. Column 4 was read past too
+#     until note **N306** measured it and found six rows understating a real edge — `clap` scoped
+#     to `cli-core` while the daemon, the privileged helper and `xtask` all declare it, which is
+#     the column added to stop exactly that. Claim 5 below now requires a row to name every
+#     workspace member with a **normal** dependency edge on the crate. It does *not* require the
+#     converse, because several cells legitimately name a member the crate reaches transitively
+#     and say so — the argument is beside claim 5.
 #   * **It does not claim a registered crate has a consumer.** That is `futures-timer`'s shape
 #     above, and deliberately not a branch — L32's residual is closed by the mark and the
 #     disposition sentence being *written*, not by a linkage walk.
@@ -251,9 +256,10 @@ gate_require_nonzero "${#third_party[@]}" "third-party [workspace.dependencies] 
 row_lines=()
 row_crates=()
 row_pins=()
+row_scopes=()
 saw_heading=0
 saw_header=0
-while IFS=$'\t' read -r kind field_a field_b field_c; do
+while IFS=$'\t' read -r kind field_a field_b field_c field_d; do
     case "$kind" in
     HEADING) saw_heading=1 ;;
     HEADER) saw_header=1 ;;
@@ -261,6 +267,7 @@ while IFS=$'\t' read -r kind field_a field_b field_c; do
         row_lines+=("$field_a")
         row_crates+=("$field_b")
         row_pins+=("$field_c")
+        row_scopes+=("$field_d")
         ;;
     esac
 done < <(awk -v heading="$section_heading" -v header="$table_header" '
@@ -275,9 +282,11 @@ done < <(awk -v heading="$section_heading" -v header="$table_header" '
     {
         crate = $2
         pin = $3
+        scope = $5
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", crate)
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", pin)
-        print "ROW\t" NR "\t" crate "\t" pin
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", scope)
+        print "ROW\t" NR "\t" crate "\t" pin "\t" scope
     }
 ' "$design")
 
@@ -397,5 +406,94 @@ for name in "${third_party[@]}"; do
 done
 gate_checked "$registered_entries" "third-party manifest entries registered by a row in §2.8"
 gate_require_nonzero "$registered_entries" "third-party manifest entries registered by a row"
+
+# ------------------------------------------------------------------ the Scope column
+#
+# **The column v3 added, and it was wrong about six rows on the day it was checked** (note
+# **N306**). §2.8's own sentence says the scope column "names the crates whose edge it is, because
+# an unscoped row is how `caps` went unregistered inside the one crate whose dependency list most
+# needs reviewing" — and this predicate's header said, correctly, that columns 3, 4 and 5 were read
+# past. Measured against `cargo metadata`, `clap` said `cli-core` while the daemon, the privileged
+# helper and `xtask` all declare it; `jsonrpsee` named `api` and `client` and not the daemon, which
+# is the one edge note **N38** is actually about; `camino`, `uuid`, `image` and `schemars` each
+# named one or two crates out of a real set of three to ten. So the column added to stop an edge
+# hiding inside a crate nobody reviews was itself hiding edges, and nothing could go red on it.
+#
+# **One direction, and the header keeps saying so.** What is checked is that a row names every
+# workspace member declaring the crate as a **normal** (non-dev, non-build) dependency. The other
+# direction — that a member a cell names really declares the crate — is deliberately *not*
+# checked, because several cells name a crate that reaches a member transitively and say so in
+# prose: `tokio`'s cell writes "api (via jsonrpsee — N5)" and `hyper`'s writes "daemon (via
+# axum/jsonrpsee-server)", both of them true statements about a graph and neither of them a
+# manifest edge. A rule that refused those would push the prose out of the column.
+#
+# **The population is the rows whose cell names a member at all**, and the rest are a counted,
+# named skip rather than a silence (AGENTS rule 3): `workspace`, `roots`, `(pin, not linked)`,
+# `(jsonrpsee's)` and `(clap's; pins)` are all legitimate cells that name no crate, and a
+# predicate that treated them as "names nobody" would demand that `serde`'s row list twelve
+# members. Member names are matched on their own — `cli` does not match inside `cli-core` —
+# and the short names come from `cargo metadata` rather than from a list here, so a renamed
+# crate renames what this reads.
+
+declare -A short_name=()
+while IFS= read -r member; do
+    [[ -n "$member" ]] || continue
+    short_name["${member#webcam-handler-}"]="$member"
+done < <(gate_metadata | jq -r '
+    ( [ .packages[] | { key: .id, value: .name } ] | from_entries ) as $names
+    | .workspace_members[] | $names[.] // empty')
+
+# Which members declare which third-party crate as a normal dependency, from the graph.
+declare -A normal_edges=()
+while IFS=$'\t' read -r crate member; do
+    [[ -n "$crate" ]] || continue
+    normal_edges["$crate"]="${normal_edges[$crate]:-} ${member#webcam-handler-}"
+done < <(gate_metadata | jq -r '
+    ( [ .workspace_members[] ] ) as $members
+    | .packages[]
+    | select(.id as $id | $members | index($id))
+    | .name as $member
+    | .dependencies[]
+    | select(.kind == null)
+    | select(.name | startswith("webcam-handler") | not)
+    | "\(.name)\t\($member)"
+')
+
+scoped_rows=0
+unscoped_rows=0
+for index in "${!row_lines[@]}"; do
+    line="${row_lines[$index]}"
+    crate_cell="${row_crates[$index]}"
+    scope_cell="${row_scopes[$index]}"
+
+    named=()
+    for short in "${!short_name[@]}"; do
+        if [[ "$scope_cell" =~ (^|[^a-z0-9-])"$short"([^a-z0-9-]|$) ]]; then
+            named+=("$short")
+        fi
+    done
+    if ((${#named[@]} == 0)); then
+        unscoped_rows=$((unscoped_rows + 1))
+        continue
+    fi
+    scoped_rows=$((scoped_rows + 1))
+
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        for owner in ${normal_edges[$name]:-}; do
+            found=0
+            for short in "${named[@]}"; do
+                [[ "$short" == "$owner" ]] && found=1
+            done
+            if ((found == 0)); then
+                gate_fail "$design_path:$line scopes ${tick}${name}${tick} to '$scope_cell', and ${tick}webcam-handler-${owner}${tick} declares it as a normal dependency; §2.8's scope column exists so an edge cannot hide inside a crate nobody is reviewing, and a cell that understates one is that hiding place"
+            fi
+        done
+    done < <(printf '%s' "$crate_cell" | grep -oE "${tick}[^${tick}]+${tick}" | tr -d "$tick")
+done
+
+gate_checked "$scoped_rows" "rows whose Scope cell names a workspace member, reconciled against every normal dependency edge cargo metadata reports"
+gate_require_nonzero "$scoped_rows" "rows whose Scope cell names a workspace member"
+gate_skip "$unscoped_rows" "row(s) whose Scope cell names no workspace member (workspace-wide, a pin with no edge, or another crate's transitive dependency carried visibly); the cell is prose there and this claim has nothing to compare"
 
 gate_finish

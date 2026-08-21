@@ -32,7 +32,7 @@ Examples are written with placeholders. Substitute a real value for each one bef
 
 | In an example | Substitute |
 |---|---|
-| `<CAMERA>` | a camera id from `list`, or any unambiguous prefix of one (`cam:obsbot-tiny-3`, `cam:obsbot`) |
+| `<CAMERA>` | a camera, in any of the spellings *How to name a camera* below lists |
 | `<CONTROL>` | a control slug from `controls` (`brightness`, `pan_absolute`) |
 | `<VALUE>` | an integer inside that control's declared range |
 | `<TASK>` | your own name for what a calibration session is for (`read the DUT display`) |
@@ -102,7 +102,7 @@ webcam-handler-client info <CAMERA>
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 ### `controls`
 
@@ -116,7 +116,7 @@ webcam-handler-client controls <CAMERA> [--discover-pairs]
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -134,7 +134,7 @@ webcam-handler-client get <CAMERA> <CONTROL>
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 | `<CONTROL>` | Which control, by slug |
 
 ### `set`
@@ -149,7 +149,7 @@ webcam-handler-client set <CAMERA> <CONTROL=VALUE>… [--no-guard]
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 | `<CONTROL=VALUE>` | The writes, as `CONTROL=VALUE`. Applied in the order given |
 
 | Option | Value | Default | What it does |
@@ -168,7 +168,7 @@ webcam-handler-client snapshot <CAMERA> [--out <PATH>]
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -186,7 +186,7 @@ webcam-handler-client restore <CAMERA> <PATH>
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 | `<PATH>` | The snapshot document |
 
 ### `photo`
@@ -201,7 +201,7 @@ webcam-handler-client photo <CAMERA> [--out <PATH>] [--format <FORMAT>] [--trans
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -242,7 +242,7 @@ webcam-handler-client record <CAMERA> --out <PATH> [--duration <DURATION>] [--si
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -264,7 +264,7 @@ webcam-handler-client calibrate start <CAMERA> --task <TEXT> [--goal <TEXT>] [--
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -286,7 +286,7 @@ Exactly one of `--task`, `--session` is required.
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 | `<CONTROL>` | The controls, by slug. Every control on the camera when none are named |
 
 | Option | Value | Default | What it does |
@@ -311,7 +311,7 @@ Exactly one of `--all`, `--step`, `--points`, `--values` is required.
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 | `<CONTROL>` | The control to sweep, by slug |
 
 | Option | Value | Default | What it does |
@@ -344,7 +344,7 @@ Exactly one of `--task`, `--session` is required.
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -367,7 +367,7 @@ At least one of `--metric`, `--value`, `--by` is required.
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 | `<CONTROL>` | The control, by slug |
 
 | Option | Value | Default | What it does |
@@ -392,7 +392,7 @@ Exactly one of `--task`, `--session` is required.
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -414,7 +414,7 @@ Exactly one of `--task`, `--session` is required.
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -433,7 +433,7 @@ webcam-handler-client calibrate list [<CAMERA>]
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | One camera's sessions, in any spelling `info` takes. All cameras when omitted |
+| `<CAMERA>` | One camera's sessions; every camera's when omitted. Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 ### `profile capture`
 
@@ -447,7 +447,7 @@ webcam-handler-client profile capture <CAMERA> [--out <PATH>] [--capturer <WHO>]
 
 | Argument | What it is |
 |---|---|
-| `<CAMERA>` | Which camera: an id or unambiguous prefix (`cam:obsbot-tiny-3`, `obsbot`), a node path (`/dev/video0`), `bus:3-4:1.2`, `usb:04f2:b83c`, or `serial:0001` |
+| `<CAMERA>` | Which camera: `cam:<id>`, `/dev/videoN`, `bus:<interface-path>`, `usb:<vid>:<pid>`, `serial:<text>`. An id may be written bare, or as any unambiguous prefix of one. |
 
 | Option | Value | Default | What it does |
 |---|---|---|---|
@@ -488,7 +488,7 @@ These flags take a word from a closed set. A word outside the set is refused whi
 
 *Generated from `schema::selector`'s closed scheme vocabulary — every spelling, and whether it survives a replug. Do not edit; regenerate.*
 
-Every verb that takes a camera takes any of these. An id or a prefix is what `list` prints; the other four are for a caller that already holds something.
+Every verb that takes a camera takes any of these. An id or a prefix is what `list` prints; the rest are for a caller that already holds something.
 
 | Write | Matches | Survives a replug |
 |---|---|---|
@@ -574,8 +574,8 @@ A failed verb writes one line to standard error, prints the failure document und
 | `device_gone` | `10` | **stop** | The camera is gone — unplugged, or its driver unbound. Nothing you can do will bring it back. Stop and tell the human. |
 | `busy` | `11` | **retry** | Something else is streaming from the camera; only one thing may. Read `this_process`: when it is there the holder is the program you are talking to, and the message says what it is doing and what ends it — a `recording` ends on the take's own duration, `starting_recording` clears in the time one stream takes to come up, `streaming` ends when that stream is stopped, `streaming_preview` needs one of the preview's viewers to leave, and `running_commands` means the camera's command queue is full and clears as the work ahead of you runs. When it is absent the holder is another program, and `holders` names it when this user could see it. `--wait` helps with `running_commands` and with nothing else: it asks for room in that queue rather than being refused, and it waits for no stream to end. |
 | `permission_denied` | `12` | **fix the setup** | The device node is there and this user may not open it. The message carries the remedy — usually joining the `video` group and logging back in. Retrying changes nothing. |
-| `camera_unknown` | `13` | **fix the request** | No camera answers to that id. Run `list` and use an id it printed; ids come from what the device says about itself, not from `/dev/video0`. |
-| `camera_ambiguous` | `14` | **fix the request** | The prefix matched several cameras. The message names them; use a longer prefix or a whole id. |
+| `camera_unknown` | `13` | **fix the request** | Nothing in the live listing matches what you sent. Run `list` and send something it printed; *How to name a camera* gives every spelling this build takes, node paths included. A node path is an **address** rather than a name, though — a driver reload renumbers it — so resolve one again rather than storing it. |
+| `camera_ambiguous` | `14` | **fix the request** | What you sent matches more than one camera, which is ordinary for a spelling that names a model rather than a device — two cameras of one model share a `usb:` id. The message's `candidates` list every id it matched; send one of those. A longer prefix works only when what you sent was an id prefix. |
 | `control_unknown` | `15` | **fix the request** | This camera has no such control. The message carries the closest slugs it does have, and `controls <CAMERA>` lists all of them. |
 | `control_read_only` | `16` | **do not retry** | The device says this control cannot be written — `privacy` on a camera with a hardware shutter, for instance. This is the camera's answer about itself, not a temporary state. |
 | `control_inactive` | `17` | **change the plan** | An automation control currently owns this one. Your write was already guarded — guarding is the default — and the guard is what could not clear the owner, so repeating the write changes nothing. When the message names the automation, set that control to manual yourself and write again; when it says no partner was discovered, this camera's pairing is unknown and a human has to say which control owns this one. `--no-guard` is not the remedy: it writes anyway and the automation overwrites the value on the next frame. |

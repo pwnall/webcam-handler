@@ -230,3 +230,69 @@ fail_case_the_manifest_has_no_workspace_dependencies_table() {
         "declares no [workspace.dependencies] table" \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
+
+# ------------------------------------------------- claim 5: the Scope column, one direction
+
+# **The defect as it was found, seeded back into the row it was found in** (note **N306**).
+# `clap`'s cell said `cli-core` while `webcam-handler-daemon`, `webcam-handler-priv` and
+# `webcam-handler-xtask` all declare it — and the crate with the strongest reason to be reviewed
+# is the privileged helper, which is the very argument §2.8's own sentence gives for the column.
+fail_case_a_scope_cell_understates_a_crates_real_edges() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    # shellcheck disable=SC2016  # the row's own backticks, quoted verbatim for `sed`
+    gate_seed 's@^| `clap` | 4 | MIT/Apache | cli-core, daemon, priv, xtask |@| `clap` | 4 | MIT/Apache | cli-core |@' \
+        "$(_design "$tree")"
+    gate_red_because \
+        "and \`webcam-handler-priv\` declares it as a normal dependency" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The same claim over an edge that appears rather than a cell that shrinks — which is how it will
+# actually happen: a crate picks up a dependency the workspace already registers, and nobody
+# thinks to edit a table in a design document.
+fail_case_a_member_takes_an_edge_no_row_scopes_it_to() {
+    local md
+    # The edge is added to the *graph* rather than to a manifest, because a new dependency is a
+    # lockfile change and `gate_metadata` resolves with `--locked` — which would make this arm red
+    # on cargo's refusal rather than on the sentence it claims (note **N60**). The graph is
+    # doctored from the real one, so it differs from the shipped workspace in exactly this one way.
+    md="$(gate_metadata_snapshot)"
+    jq '
+        (.packages[] | select(.name == "webcam-handler-imaging") | .dependencies[0]) as $model
+        | (.packages[] | select(.name == "webcam-handler-imaging") | .dependencies)
+            += [ $model | .name = "humantime" | .kind = null ]
+    ' <"$md" >"$md.seeded"
+    gate_red_because \
+        "and \`webcam-handler-imaging\` declares it as a normal dependency" \
+        env WCH_GATE_METADATA="$md.seeded" "$GATE"
+}
+
+# A *dev* edge is not a normal one and must stay green, or the claim would demand that every
+# row list the crates whose test suites reach it — `image`'s three dev consumers, `tempfile`'s
+# four — and the column would stop being about linkage. A gate that refused those is a gate
+# somebody turns off.
+pass_case_a_dev_only_edge_needs_no_scope_cell_entry() {
+    local md
+    md="$(gate_metadata_snapshot)"
+    jq '
+        (.packages[] | select(.name == "webcam-handler-imaging") | .dependencies[0]) as $model
+        | (.packages[] | select(.name == "webcam-handler-imaging") | .dependencies)
+            += [ $model | .name = "humantime" | .kind = "dev" ]
+    ' <"$md" >"$md.seeded"
+    WCH_GATE_METADATA="$md.seeded" "$GATE"
+}
+
+# The population's own inverse: a table whose every Scope cell had stopped naming a member would
+# leave this claim true of nothing while reporting a green run, which is the skip that reads as a
+# pass (note **N231**). Seeded by emptying every cell rather than by deleting rows, so the other
+# four claims stay green and this arm is red for its own reason.
+fail_case_no_row_scopes_anything_to_a_workspace_member() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's@^\(| `[^|]*| [^|]*| [^|]*\)| [^|]*|\(.*\)$@\1| workspace |\2@' \
+        "$(_design "$tree")"
+    gate_red_because \
+        "examined zero rows whose Scope cell names a workspace member" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}

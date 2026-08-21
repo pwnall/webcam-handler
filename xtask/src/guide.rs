@@ -77,6 +77,16 @@ struct Placeholder {
     meaning: &'static str,
 }
 
+/// The heading of the section that lists every spelling a camera can be named in.
+///
+/// A constant because two things point at it: the section itself, and the `<CAMERA>` row of the
+/// placeholder glossary — which taught D1's grammar, four spellings short of D14's, two hundred
+/// lines above the table generated from `SelectorScheme::ALL` that contradicted it. One committed
+/// document, written for an unattended agent, saying two things about `<CAMERA>` (note **N303**).
+/// The glossary points at the table now, and
+/// `the_camera_placeholder_does_not_teach_a_grammar_of_its_own` holds it to that.
+const CAMERA_SECTION: &str = "How to name a camera";
+
 /// Every placeholder the guide's examples use.
 ///
 /// A hand list, and it is checked: `every_placeholder_the_examples_use_is_documented` walks
@@ -85,8 +95,7 @@ struct Placeholder {
 const PLACEHOLDERS: &[Placeholder] = &[
     Placeholder {
         token: "<CAMERA>",
-        meaning: "a camera id from `list`, or any unambiguous prefix of one \
-                  (`cam:obsbot-tiny-3`, `cam:obsbot`)",
+        meaning: "a camera, in any of the spellings *How to name a camera* below lists",
     },
     Placeholder {
         token: "<CONTROL>",
@@ -207,7 +216,7 @@ pub(crate) fn guide() -> Result<String> {
             body: vocabularies(),
         },
         Section {
-            title: "How to name a camera".to_owned(),
+            title: CAMERA_SECTION.to_owned(),
             provenance: Provenance::Derived(
                 "`schema::selector`'s closed scheme vocabulary — every spelling, and whether \
                  it survives a replug",
@@ -717,9 +726,16 @@ fn vocabularies() -> String {
 fn camera_selectors() -> String {
     use schema::selector::{SelectorScheme, Stability};
 
+    // **The sentence carries no count of `ALL`.** It read "the other four" — a transcription of
+    // `SelectorScheme::ALL.len() - 1` in the one section whose provenance line says it is
+    // generated from that vocabulary, so a sixth scheme would have made the guide written for
+    // an unattended agent wrong about its own table, silently (a prose count of code is a claim
+    // something reconciles or it is not made — notes **N153**, **N158**, and the measurement is
+    // note **N308**). `the_selector_sections_prose_carries_no_count_its_own_table_can_falsify`
+    // is the arm.
     let mut out = String::from(
         "Every verb that takes a camera takes any of these. An id or a prefix is what `list` \
-         prints; the other four are for a caller that already holds something.\n\n\
+         prints; the rest are for a caller that already holds something.\n\n\
          | Write | Matches | Survives a replug |\n|---|---|---|\n",
     );
     for scheme in SelectorScheme::ALL {
@@ -904,13 +920,17 @@ fn disposition_text(kind: ErrorKind) -> (&'static str, &'static str) {
         ),
         ErrorKind::CameraUnknown => (
             "fix the request",
-            "No camera answers to that id. Run `list` and use an id it printed; ids come from \
-             what the device says about itself, not from `/dev/video0`.",
+            "Nothing in the live listing matches what you sent. Run `list` and send something \
+             it printed; *How to name a camera* gives every spelling this build takes, node \
+             paths included. A node path is an **address** rather than a name, though — a \
+             driver reload renumbers it — so resolve one again rather than storing it.",
         ),
         ErrorKind::CameraAmbiguous => (
             "fix the request",
-            "The prefix matched several cameras. The message names them; use a longer prefix \
-             or a whole id.",
+            "What you sent matches more than one camera, which is ordinary for a spelling that \
+             names a model rather than a device — two cameras of one model share a `usb:` id. \
+             The message's `candidates` list every id it matched; send one of those. A longer \
+             prefix works only when what you sent was an id prefix.",
         ),
         ErrorKind::ControlUnknown => (
             "fix the request",
@@ -1322,6 +1342,8 @@ fn operations_map(root: &clap::Command) -> Result<String> {
 mod tests {
     use std::collections::BTreeSet;
 
+    use schema::selector::SelectorScheme;
+
     use super::*;
 
     /// The emitted guide, for a test that asks it a question.
@@ -1537,6 +1559,109 @@ mod tests {
                      not explain"
                 );
                 rest = &rest[open + close + 1..];
+            }
+        }
+    }
+
+    #[test]
+    fn the_camera_placeholder_does_not_teach_a_grammar_of_its_own() {
+        // One document, one answer about `<CAMERA>`. The glossary row and the selector table are
+        // two hundred lines apart in the emitted file, and the row used to carry D1's grammar —
+        // an id or a prefix, and nothing else — while the table generated from
+        // `SelectorScheme::ALL` listed five spellings. A reader who is a program takes the first
+        // one it meets, which is the wrong one (note **N303**).
+        //
+        // The rule is a disjunction rather than "the row lists them all", because both shapes
+        // are honest and only the third is not: a row that teaches the whole vocabulary agrees
+        // with the table by repeating it, a row that teaches none of it and points at the table
+        // agrees by deferring, and a row that teaches *some* of it is the defect whatever it
+        // leaves out.
+        let row = PLACEHOLDERS
+            .iter()
+            .find(|placeholder| placeholder.token == "<CAMERA>")
+            .expect("the guide explains <CAMERA>");
+        let taught = SelectorScheme::ALL
+            .iter()
+            .filter(|scheme| row.meaning.contains(scheme.example()))
+            .count();
+        if taught == 0 {
+            assert!(
+                row.meaning.contains(CAMERA_SECTION),
+                "the <CAMERA> row teaches no spelling and points at no section: {}",
+                row.meaning
+            );
+        } else {
+            assert_eq!(
+                taught,
+                SelectorScheme::ALL.len(),
+                "the <CAMERA> row teaches {taught} of {} spellings: {}",
+                SelectorScheme::ALL.len(),
+                row.meaning
+            );
+        }
+
+        // And the section it defers to is really in the document — a pointer at a heading
+        // somebody renamed is a reader sent nowhere, and the emitted file is what a reader
+        // holds.
+        let document = emitted();
+        assert!(
+            document.contains(&format!("## {CAMERA_SECTION}")),
+            "the document has no \"{CAMERA_SECTION}\" section for the <CAMERA> row to point at"
+        );
+    }
+
+    #[test]
+    fn the_selector_sections_prose_carries_no_count_its_own_table_can_falsify() {
+        // The section's provenance line says it is generated from `SelectorScheme::ALL` — "every
+        // spelling" — and its opening sentence said "the other four", which is
+        // `ALL.len() - 1` written out by hand in the one document whose reader is an unattended
+        // program. A sixth scheme joins `ALL`, the table grows a row, and the sentence above it
+        // is quietly wrong: not false today, false the day D14 grows (notes **N153**, **N158**).
+        //
+        // Held two ways, because either alone is weak. The row count is the derivation — the
+        // table must carry one `Write` row per scheme and no more, so the assertion below has a
+        // real subject. The word walk is the claim: no English number that `ALL` could falsify
+        // may appear in the prose above the table. The pair is red in both directions — a
+        // seventh row with no scheme reddens the first, and the sentence this test was written
+        // for reddens the second.
+        let section = camera_selectors();
+        let (prose, table) = section
+            .split_once("| Write |")
+            .expect("the selector section is a sentence and then a table");
+
+        let rows = table.lines().filter(|line| line.starts_with("| `")).count();
+        assert_eq!(
+            rows,
+            SelectorScheme::ALL.len(),
+            "the selector table has {rows} row(s) for {} scheme(s), so a count in the prose \
+             above it could not be checked against anything: {table}",
+            SelectorScheme::ALL.len()
+        );
+
+        // Every cardinality a reader would recognise as a count of this table, spelled here
+        // rather than derived from `ALL` because what is banned is *any* number and not the
+        // number this build happens to have — a walk that banned only today's count would pass
+        // "the other five" on the day a sixth scheme landed, which is the same defect one
+        // scheme later.
+        //
+        // **`one` is deliberately not on the list**, and that is the honest residual: it is the
+        // indefinite pronoun this prose uses freely ("send one of those", "a caller that holds
+        // one"), so banning it would make this arm red for a reason it is not about — and a
+        // check red for the wrong reason reads as green about the right one (notes **N240**–
+        // **N243**). The sentence it would guard, "the other one", is only reachable from a
+        // two-scheme vocabulary, which is a shrinking D14 does not have and would not leave a
+        // table worth a sentence.
+        const COUNTS: &[&str] = &[
+            "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+            "twelve", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12",
+        ];
+        for count in COUNTS {
+            for word in prose.split(|c: char| !c.is_ascii_alphanumeric()) {
+                assert!(
+                    !word.eq_ignore_ascii_case(count),
+                    "the selector section's prose counts the vocabulary (\"{word}\"), and \
+                     nothing reconciles that count against `SelectorScheme::ALL`: {prose}"
+                );
             }
         }
     }

@@ -451,6 +451,170 @@ fn every_flag_the_failure_table_offers_as_a_lever_really_produces_that_failure()
     }
 }
 
+/// One failure row's `Do` prose, by the kind the row is keyed on.
+///
+/// The same four-cell reading [`flags_the_failure_table_names`] does, asked for one row rather
+/// than for a token class — because the claim below is about a *sentence* and not about the
+/// spans inside it. Read out of the committed guide, so a remedy repaired in the generator and
+/// not regenerated is a row this cannot find its subject in.
+fn failure_table_remedy(kind: &str) -> String {
+    for line in GUIDE.lines() {
+        let cells: Vec<&str> = line.trim().trim_matches('|').split('|').collect();
+        if cells.len() != 4 {
+            continue;
+        }
+        if cells[0].trim().trim_matches('`') != kind {
+            continue;
+        }
+        let code = cells[1].trim().trim_matches('`');
+        if code.is_empty() || !code.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        return cells[3].trim().to_owned();
+    }
+    panic!("the failure table has no `{kind}` row for this claim to be about")
+}
+
+/// The refusal document one run of the shipped binary printed, and its exit code.
+///
+/// The `--json` half of `a_failing_verb_prints_the_document_the_guide_shows_and_exits_the_code_
+/// it_lists`, factored out because the two selector claims below each need one and neither is
+/// about the document's shape.
+fn refusal_from(profiles: &[&str], selector: &str) -> (serde_json::Value, Option<i32>) {
+    let corpus = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/profiles");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"));
+    command.args(["--backend", "fake"]);
+    for profile in profiles {
+        let path = corpus.join(format!("{profile}.json"));
+        assert!(path.exists(), "the corpus is missing {path}");
+        command.args(["--profile", path.as_str()]);
+    }
+    command.args(["--json", "info", selector]);
+    let output = command.output().expect("webcam-handler-cli runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document = serde_json::from_str(&stdout).unwrap_or_else(|error| {
+        panic!("a failed --json verb prints a document: {error}\n{stdout}")
+    });
+    (document, output.status.code())
+}
+
+#[test]
+fn the_two_selector_rows_of_the_failure_table_send_a_reader_where_this_build_really_sends_them() {
+    // **The `Do` column is payload, and payload is tested by driving the claim** (rubric A15).
+    // Both of these rows were written for D1, where a camera had one grammar — an id or a
+    // prefix of one — and both survived D14 unchanged, which is note **N303**'s class one
+    // reader further along than the batch that found it looked (note **N308**):
+    //
+    //   * `camera_unknown` told a reader that "ids come from what the device says about
+    //     itself, not from `/dev/video0`" — two hundred lines below a generated table listing
+    //     `/dev/videoN` as one of five spellings this build takes, and above an `info
+    //     /dev/video0` that answers with the camera. One document, two grammars, and the wrong
+    //     one is the one an agent reaches when it is already failing.
+    //   * `camera_ambiguous` said "use a longer prefix or a whole id" for a refusal D12/D14
+    //     calls the normal case somewhere: `usb:<vid>:<pid>` names a *model*, two cameras of
+    //     one model match it \[PF:8, PF:13\], and there is no prefix in a VID:PID to lengthen.
+    //     An instruction an unattended agent cannot carry out.
+    //
+    // Driven rather than spelled, and the assertions are about the *run's own document* rather
+    // than about today's wording: the ambiguous row must name a field the refusal really
+    // carries, and neither row may deny a spelling the parser really takes. A remedy reworded
+    // in any way that stays true of the build passes; a remedy that goes back to teaching D1's
+    // grammar does not.
+    let node_path = failure_table_remedy("camera_unknown");
+    let ambiguous = failure_table_remedy("camera_ambiguous");
+
+    // The refusal a node path really produces. `/dev/video7` parses — the scheme is one this
+    // build knows — so the answer is `camera_unknown` about a live listing and not a refusal to
+    // read the spelling, which is exactly what the row must not tell a reader.
+    let (unknown, code) = refusal_from(&["chicony-rgb"], "/dev/video7");
+    assert_eq!(unknown["error"]["kind"], "camera_unknown", "{unknown}");
+    assert_eq!(unknown["error"]["requested"], "/dev/video7", "{unknown}");
+    assert_eq!(
+        code,
+        Some(i32::from(cli_core::exit_code(
+            &schema::error::Error::CameraUnknown {
+                requested: "/dev/video7".to_owned(),
+            }
+        )))
+    );
+    assert!(
+        !node_path.contains("not from `/dev/video0`"),
+        "the `camera_unknown` remedy still tells a reader a node path is not how a camera is \
+         named, and this build just resolved one: {node_path}"
+    );
+    assert!(
+        node_path.contains("How to name a camera"),
+        "the `camera_unknown` remedy teaches its own grammar instead of sending a reader to \
+         the one section generated from `SelectorScheme::ALL`: {node_path}"
+    );
+
+    // And the same spelling, resolved. The negative assertion above is only worth having
+    // beside this: a build that refused `/dev/videoN` outright would make the old row true
+    // again, and then it is this line that goes red rather than that one.
+    let corpus = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/profiles");
+    let resolved = Command::new(env!("CARGO_BIN_EXE_webcam-handler-cli"))
+        .args([
+            "--backend",
+            "fake",
+            "--profile",
+            corpus.join("chicony-rgb.json").as_str(),
+            "--json",
+            "info",
+            "/dev/video0",
+        ])
+        .output()
+        .expect("webcam-handler-cli runs");
+    assert!(
+        resolved.status.success(),
+        "this build no longer answers a node path, so the remedy's grammar is the question \
+         again: {}",
+        String::from_utf8_lossy(&resolved.stdout)
+    );
+
+    // The ambiguous half, over the one committed pair D14 pins it on: two halves of one
+    // physical Chicony, one USB id, one serial.
+    let (many, _) = refusal_from(&["chicony-rgb", "chicony-ir"], "usb:04f2:b83c");
+    assert_eq!(many["error"]["kind"], "camera_ambiguous", "{many}");
+
+    // **The reconciliation: the remedy names a field of the document the reader is holding.**
+    // The population is this refusal's own payload, less the two fields every D13 refusal
+    // carries — `kind`, which a reader branches on before reading any remedy, and `requested`,
+    // which is what it already sent. What is left is what this failure gives a caller to act
+    // on, and the row has to name one of them. Derived rather than written, so the day
+    // `candidates` is spelled otherwise the row is red with it, and a row that went back to
+    // naming only a lever this refusal has none of is red today.
+    let payload = many["error"]
+        .as_object()
+        .unwrap_or_else(|| panic!("the refusal is an object: {many}"));
+    let actionable: Vec<&String> = payload
+        .keys()
+        .filter(|key| key.as_str() != "kind" && key.as_str() != "requested")
+        .collect();
+    assert!(
+        !actionable.is_empty(),
+        "this refusal carries nothing beyond `kind` and `requested`, so there is no field for \
+         the remedy to name and this claim has no subject: {many}"
+    );
+    assert!(
+        actionable
+            .iter()
+            .any(|field| ambiguous.contains(&format!("`{field}`"))),
+        "the `camera_ambiguous` remedy names none of {actionable:?} — the fields the document \
+         this refusal printed actually carries — so a reader is told to act on something it is \
+         not holding: {ambiguous}"
+    );
+
+    // A regression pin on the one sentence this row shipped with, and it is a pin on a
+    // spelling rather than on the class: the assertion above is the class, and it would pass a
+    // reworded row that still names `candidates`. Kept because the old sentence is what a
+    // reader reaching for the familiar wording would write back.
+    assert!(
+        !ambiguous.starts_with("The prefix matched"),
+        "the `camera_ambiguous` remedy is back to calling every ambiguous spelling a prefix, \
+         and the one just driven has no prefix to lengthen: {ambiguous}"
+    );
+}
+
 /// Every code span the failure table's prose carries, with the row it is written in.
 ///
 /// [`flags_the_failure_table_names`] one token class along, and read out of the committed
@@ -560,9 +724,10 @@ fn every_name_the_failure_table_carries_is_one_this_surface_really_has() {
     // to run: an entry here for a verb would be the excuse this test exists to refuse.
     let prose: &[(&str, &str)] = &[
         (
-            "/dev/video0",
-            "a device node the `camera_unknown` row names in order to say that ids do **not** \
-             come from it",
+            "usb:",
+            "a scheme prefix the `camera_ambiguous` row names to say why one spelling can \
+             match two devices; the spellings themselves live in *How to name a camera*, \
+             generated from `SelectorScheme::ALL`, and are not repeated here",
         ),
         (
             "privacy",

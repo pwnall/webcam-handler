@@ -79,6 +79,31 @@ fail_case_the_command_surface_moved_and_the_guide_did_not() {
         "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
+# **The same claim over a v3 population, and it took its own arm.** The arm above seeds a P6-era
+# flag's value name, which reaches the guide through clap's help — so "the guide's population is
+# scraped rather than named" was demonstrated for the *verb* half and asserted for the rest. The
+# guide's v3 half is generated somewhere else entirely: the selector table walks
+# `SelectorScheme::ALL` and asks each scheme for its `example()` and its `stability()`, and no
+# gate in this tree had ever seeded that vocabulary (docs/15 Part 2's "derived populations absorb
+# the new verbs" row, which was struck through as landed on two of its three gates).
+#
+# The seed is one scheme's sample spelling, which still compiles for the arm above's reason — it
+# is a `&'static str` a `match` returns and nothing matches on. It reaches the committed guide in
+# two places that are two hundred lines apart: the selector table's `Write` column, and the
+# `<CAMERA>` help of every verb that takes a camera, which `cli_core::camera_arg_help` renders
+# from the same `ALL`. Both go stale together, which is the property one home buys.
+fail_case_the_selector_vocabulary_moved_and_the_guide_did_not() {
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's@SelectorScheme::BusPath => Some("bus:"),@SelectorScheme::BusPath => Some("buspath:"),@' \
+        "$tree/crates/schema/src/selector.rs"
+    gate_seed 's@SelectorScheme::BusPath => "bus:<interface-path>",@SelectorScheme::BusPath => "buspath:<interface-path>",@' \
+        "$tree/crates/schema/src/selector.rs"
+    gate_red_because 'docs/agent-guide.md is stale' \
+        env "CARGO_TARGET_DIR=$(_isolated_target_dir agent-guide-selector-drift)" \
+        "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
 # A generator that cannot run is not evidence that the manual is current.
 fail_case_the_generator_fails() {
     gate_red_because 'the guide generator exited' \

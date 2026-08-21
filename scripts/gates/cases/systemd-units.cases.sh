@@ -140,7 +140,55 @@ fail_case_a_drain_the_units_stop_timeout_cannot_fit() {
     sed 's/^pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = .*/pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 90_000;/' \
         "$limits" >"$limits.seeded"
     mv "$limits.seeded" "$limits"
-    gate_red_because "the daemon's own shutdown drain is 90000ms" \
+    gate_red_because "the process's own worst case is 182000ms" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# **The hole the fourth claim shipped with, seeded at the number that measured it** (note
+# **N304**). This gate compared `TimeoutStopSec` against `DAEMON_SHUTDOWN_DRAIN_MS` alone and
+# never read `WEB_LISTENER_STOP_MS` at all, so a drain raised from 20 s to 21.5 s passed —
+# 45 s > 21.5 s, and the gate said in as many words that "the daemon's own bound is what fires"
+# — while the four waits sum to 21.5 + 2 + 21.5 = 45 s and systemd's SIGKILL lands exactly on
+# the ordered teardown this pair exists to protect. Every other arm here would have stayed green
+# too: the constant still compiles, the suite is still green, and the only number that moved is
+# one nothing was reading. The seed is deliberately *inside* the old bound and outside the new
+# one, so this arm is red only because the sum is what is compared.
+fail_case_the_units_bound_no_longer_exceeds_what_the_process_takes_to_stop() {
+    local tree limits
+    tree="$(gate_scratch_tree)"
+    limits="$tree/crates/schema/src/limits.rs"
+    sed 's/^pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = .*/pub const DAEMON_SHUTDOWN_DRAIN_MS: u64 = 21_500;/' \
+        "$limits" >"$limits.seeded"
+    mv "$limits.seeded" "$limits"
+    gate_red_because "the process's own worst case is 45000ms" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# The second term's own inverse: the web listener's bound raised alone. Nothing else in this
+# tree relates it to `TimeoutStopSec` — `limits.rs` carries a `const _` assertion tying it to
+# the drain, and that assertion says nothing about the unit — so before the sum was compared
+# this was invisible everywhere.
+fail_case_the_web_listeners_stop_alone_pushes_the_process_past_the_units_bound() {
+    local tree limits
+    tree="$(gate_scratch_tree)"
+    limits="$tree/crates/schema/src/limits.rs"
+    sed 's/^pub const WEB_LISTENER_STOP_MS: u64 = .*/pub const WEB_LISTENER_STOP_MS: u64 = 6_000;/' \
+        "$limits" >"$limits.seeded"
+    mv "$limits.seeded" "$limits"
+    gate_red_because "the process's own worst case is 46000ms" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+# And the derivation's own inverse: a constant this gate cannot read is a sum it cannot form,
+# which is a failure and not a pass over a bound nobody compared.
+fail_case_the_web_listeners_bound_cannot_be_read_out_of_the_tree() {
+    local tree limits
+    tree="$(gate_scratch_tree)"
+    limits="$tree/crates/schema/src/limits.rs"
+    sed 's/^pub const WEB_LISTENER_STOP_MS: u64 = .*/pub const WEB_LISTENER_STOP_MS: Duration = Duration::from_secs(2);/' \
+        "$limits" >"$limits.seeded"
+    mv "$limits.seeded" "$limits"
+    gate_red_because "could not read the daemon's own names and bounds out of the tree" \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
