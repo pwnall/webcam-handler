@@ -335,13 +335,15 @@ async fn every_module_of_the_client_is_served_with_a_content_type_a_browser_will
 /// Where `source` fails to declare `name` as `value`, exactly once. Empty is green.
 ///
 /// A pure function over text, so the arms below can drive it with a number the tree does not
-/// carry — the half that proves a reconciler can go red (AGENTS rule 2).
-fn declares(source: &str, name: &str, value: u64) -> Vec<String> {
+/// carry — the half that proves a reconciler can go red (AGENTS rule 2). `module` is named in
+/// every sentence because the population this runs over is now every module the client ships,
+/// and a drift report that named one file would send a reader to the wrong one.
+fn declares(module: &str, source: &str, name: &str, value: i64) -> Vec<String> {
     let mut drift = Vec::new();
     let exact = format!("const {name} = {value};");
     if source.matches(exact.as_str()).count() != 1 {
         drift.push(format!(
-            "assets/rpc.js does not declare `{exact}` exactly once; `schema::limits` says \
+            "assets/{module} does not declare `{exact}` exactly once; `schema::limits` says \
              {value}"
         ));
     }
@@ -352,22 +354,108 @@ fn declares(source: &str, name: &str, value: u64) -> Vec<String> {
     let declared = source.matches(declaration.as_str()).count();
     if declared != 1 {
         drift.push(format!(
-            "assets/rpc.js declares `{name}` {declared} time(s); a bound the page reads twice is \
-             two bounds"
+            "assets/{module} declares `{name}` {declared} time(s); a bound the page reads twice \
+             is two bounds"
         ));
     }
     drift
 }
 
+/// Every `const NAME = <number>;` in one module, by name.
+///
+/// The shape it matches is the one every module in this client is written in and the one
+/// `cargo fmt`'s neighbour `prettier`-less house style keeps them in: one declaration per line,
+/// `const` or `export const`, a SCREAMING_SNAKE name, a decimal literal, a semicolon. Whether a
+/// bound is exported says nothing about whether it is reconciled — `recording.js` exports
+/// `POLL_MS` so a claim can read it — so both spellings are the same population.
+///
+/// A **pure function over text**, separated from the walk below for [`routes_the_page_builds`]'
+/// reason: the arms that prove this can see a bound nobody reconciled drive it over source this
+/// tree does not carry.
+fn numbers_declared_in(source: &str) -> std::collections::BTreeMap<String, i64> {
+    let mut found = std::collections::BTreeMap::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("export const ")
+            .or_else(|| trimmed.strip_prefix("const "))
+        else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once('=') else {
+            continue;
+        };
+        // Trimmed rather than matched on `" = "`, so that a declaration written without the
+        // spaces this client happens to use is a bound this walk sees rather than a bound it
+        // silently does not. A parser that can be got past by a formatting choice is a
+        // population with a hole in it, which is exactly what this check was.
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            continue;
+        }
+        let Some(number) = value.strip_suffix(';').and_then(|v| v.parse::<i64>().ok()) else {
+            continue;
+        };
+        found.insert(name.to_owned(), number);
+    }
+    found
+}
+
+/// Every number the shipped client declares, as `(module, name) -> value`.
+///
+/// **A derived population**, which is what makes the partition below a claim rather than a list.
+/// This check walked a hand-written two-row array over `rpc.js` alone until now, sitting beside
+/// a sibling whose own doc comment argues for a derived population and says why — and the batch
+/// that landed `SWEEP_ENDING_WAIT_MS` in `calibrate-flow.js` added a member the array could not
+/// have seen, in a file the check never opened (note **N313**). Nine numbers were in the client
+/// and two were reconciled.
+///
+/// It reads `web::get` over `web::paths()`, not the files on disk, for the reason the two checks
+/// below it state: the bytes asserted about are the bytes a browser is served.
+fn numbers_the_client_declares() -> std::collections::BTreeMap<(String, String), i64> {
+    let mut found = std::collections::BTreeMap::new();
+    for path in web::paths() {
+        if !path.ends_with(".js") {
+            continue;
+        }
+        let module = web::get(path.as_ref()).expect("a path web::paths() just listed");
+        let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+        for (name, value) in numbers_declared_in(&source) {
+            found.insert((path.to_string(), name), value);
+        }
+    }
+    found
+}
+
 #[test]
 fn the_bounds_the_page_runs_on_are_the_ones_this_build_declares() {
-    // **The one place a `limits` constant crosses into JavaScript, checked** (docs/11 **L38**,
-    // note **N157**). AGENTS puts every bound in `webcam-handler-schema::limits` and asks that
-    // something read each one, and until 2026-08-16 the web client read none of them: it had no
-    // per-call timeout and no liveness at all, so a socket severed without a FIN left every call
-    // parked under a banner reading `connected`. The owner's ruling gave it two, and a browser
-    // cannot `use` a Rust constant — so the numbers are a second copy, and a second copy is only
-    // as good as the thing that reconciles it. This is that thing.
+    // **The place a `limits` constant crosses into JavaScript, checked — and the place one does
+    // not, argued** (docs/11 **L38**, notes **N157** and **N313**). AGENTS puts every bound in
+    // `webcam-handler-schema::limits` and asks that something read each one, and until
+    // 2026-08-16 the web client read none of them: it had no per-call timeout and no liveness at
+    // all, so a socket severed without a FIN left every call parked under a banner reading
+    // `connected`. The owner's ruling gave it two, and a browser cannot `use` a Rust constant —
+    // so the numbers are a second copy, and a second copy is only as good as the thing that
+    // reconciles it.
+    //
+    // **The population is derived, and that is this check's own repair.** It was a two-row array
+    // over `rpc.js` and nothing else, so the nine numbers the client declares were two
+    // reconciled and seven invisible; a third `limits` constant copied into any asset, or a new
+    // bound like `calibrate-flow.js`'s `SWEEP_ENDING_WAIT_MS`, joined the page without anything
+    // going red. Its sibling `the_urls_the_page_builds_are_the_routes_this_daemon_serves` derives
+    // its population and says why in as many words; one check in this file took the lesson and
+    // its neighbour did not.
+    //
+    // So every number in every module is now in one of two tables and the partition is asserted
+    // both ways: a row this daemon owns, reconciled against the `limits` constant it copies, or a
+    // row that is the *client's own*, carrying the reason it is not a `limits` constant. The
+    // exemptions are not a loophole in that clause — they defend it. `limits`' law is that
+    // something reads each constant, and a number no Rust would ever read is a constant kept
+    // honest by nothing; what keeps these honest is named in the cell beside each one.
     //
     // It lives in this suite rather than in `webcam-handler-web` because this is the file whose
     // subject is *what the shipped client asks this daemon for*: it already builds the two
@@ -376,35 +464,195 @@ fn the_bounds_the_page_runs_on_are_the_ones_this_build_declares() {
     // and its manifest argues at length for that, so the crate that owns both halves of this
     // comparison is this one.
     //
-    // What it reads is `web::get`, not the file on disk: the bytes asserted about are the bytes
+    // What it reads is `web::get`, not the files on disk: the bytes asserted about are the bytes
     // a browser is served (`debug-embed`), so a source tree that had been edited without a
     // rebuild cannot make this pass.
-    let module = web::get("rpc.js").expect("the client's JSON-RPC helper");
-    let source = String::from_utf8(module.bytes().to_vec()).expect("the module is UTF-8");
+    let declared = numbers_the_client_declares();
 
-    let bounds = [
-        ("CALL_TIMEOUT_MS", schema::limits::CLIENT_REQUEST_TIMEOUT_MS),
-        ("HEARTBEAT_MS", schema::limits::CLIENT_WS_HEARTBEAT_MS),
+    /// A number the page carries a second copy of: module, name, and the `limits` constant it is
+    /// a copy of.
+    type Reconciled = (&'static str, &'static str, i64);
+    let reconciled: [Reconciled; 2] = [
+        (
+            "rpc.js",
+            "CALL_TIMEOUT_MS",
+            schema::limits::CLIENT_REQUEST_TIMEOUT_MS as i64,
+        ),
+        (
+            "rpc.js",
+            "HEARTBEAT_MS",
+            schema::limits::CLIENT_WS_HEARTBEAT_MS as i64,
+        ),
     ];
-    // Distinct, or one declaration in the page could satisfy both rows and the pair would be
+
+    /// A number that is the client's own: module, name, and why `schema::limits` is the wrong
+    /// home for it.
+    type ClientsOwn = (&'static str, &'static str, &'static str);
+    let clients_own: [ClientsOwn; 7] = [
+        (
+            "calibration.js",
+            "LOG_DEPTH",
+            "presentational: how many sweep events the live log keeps on screen. A sweep is \
+             minutes and a page is not a journal; nothing off this page can tell what the number \
+             is.",
+        ),
+        (
+            "calibrate-flow.js",
+            "GRID_COLUMNS",
+            "layout only: the sample grid's column count, handed to the stylesheet as \
+             `--sample-columns` and read by nothing else.",
+        ),
+        (
+            "calibrate-flow.js",
+            "DEFAULT_SAMPLES",
+            "a form default an operator overtypes in `#flow-samples`, not a bound: what leaves \
+             the page is a `SweepSpec` stride, and how many photographs a sweep may take is \
+             bounded by the daemon that takes them.",
+        ),
+        (
+            "calibrate-flow.js",
+            "SWEEP_ENDING_WAIT_MS",
+            "the client's own bound, and it has no Rust reader by construction: it bounds how \
+             long a *browser* waits for a sweep's terminal event on a socket only that browser \
+             can watch die. Driven from both sides by the browser rung — the ending wins in `the \
+             sweep-time pane becomes the sweep and paints each sample as its event lands`, the \
+             bound wins in `the pane comes back when the sweep's ending does not, on the bound \
+             the page declares`.",
+        ),
+        (
+            "calibrate-flow.js",
+            "PREVIEW_RELEASE_TRIES",
+            "the client's own, and about this page's own `<img>`: how many times to re-send a \
+             sweep while this page's preview is still, truthfully, holding the camera it is \
+             about to sweep (note **N282**). The daemon has no view of when a browser's aborted \
+             request finishes closing.",
+        ),
+        (
+            "calibrate-flow.js",
+            "PREVIEW_RELEASE_INTERVAL_MS",
+            "the other half of the wait above, and the same reason: the interval between those \
+             re-sends, measured on a clock in the tab.",
+        ),
+        (
+            "recording.js",
+            "POLL_MS",
+            "the client's own, and deliberately not `limits::CLIENT_RECORD_POLL_MS`: \
+             recording.js's header argues that the two loops answer different questions — that \
+             one bounds how late a *client* notices its own take has finished, this one how \
+             stale a sentence a *human* is reading may be.",
+        ),
+    ];
+
+    // Distinct, or one declaration in the page could satisfy two rows and the pair would be
     // checking half of what it claims to.
     assert_ne!(
-        bounds[0].1, bounds[1].1,
-        "the two bounds are the same number"
+        reconciled[0].2, reconciled[1].2,
+        "the two reconciled bounds are the same number"
+    );
+    // …and every exemption states its own reason. A reason cell copied from the row above is a
+    // row nobody argued for, which is the one thing an exemption table cannot afford.
+    let reasons: std::collections::BTreeSet<&str> =
+        clients_own.iter().map(|(_, _, why)| *why).collect();
+    assert_eq!(
+        reasons.len(),
+        clients_own.len(),
+        "two rows of the client's-own table carry the same reason"
     );
 
-    for (name, value) in bounds {
-        let drift = declares(&source, name, value);
+    // **The partition.** Every number the client declares is in one of the two tables, and every
+    // row of either names a number the client still declares. The first half is what goes red
+    // when a bound joins the page and nobody reconciles it; the second is what goes red when a
+    // reconciled constant is deleted and its row is left behind.
+    let population: std::collections::BTreeSet<(String, String)> =
+        declared.keys().cloned().collect();
+    let accounted: std::collections::BTreeSet<(String, String)> = reconciled
+        .iter()
+        .map(|(module, name, _)| ((*module).to_owned(), (*name).to_owned()))
+        .chain(
+            clients_own
+                .iter()
+                .map(|(module, name, _)| ((*module).to_owned(), (*name).to_owned())),
+        )
+        .collect();
+    assert_eq!(
+        population, accounted,
+        "the numbers assets/*.js declares and the rows this check names are not the same set"
+    );
+    // A walk that read nothing — or that read only `rpc.js`, which is the defect this repair
+    // closed — is caught by the assertion above and needs no arm of its own: `accounted` is a
+    // hand-written table rather than a second derivation of the same walk, so a blind spot in
+    // the walk moves one side of the comparison and not both. That is the failure shape note
+    // **N307** records an equality *between two walks* being unable to report.
+
+    // Both directions of the partition, driven over a population this tree does not carry —
+    // `the_urls_the_page_builds…`' arrangement, one table along.
+    let mut with_a_stranger = population.clone();
+    with_a_stranger.insert((
+        "calibrate-flow.js".to_owned(),
+        "A_BOUND_NOBODY_RECONCILED_MS".to_owned(),
+    ));
+    assert_ne!(
+        with_a_stranger, accounted,
+        "a number the page declares and neither table names was accepted"
+    );
+    let mut with_one_gone = population.clone();
+    assert!(
+        with_one_gone.remove(&("rpc.js".to_owned(), "CALL_TIMEOUT_MS".to_owned())),
+        "the population does not contain the row this arm removes"
+    );
+    assert_ne!(
+        with_one_gone, accounted,
+        "a table row for a number the page no longer declares was accepted"
+    );
+
+    // …and the parser that derives the population can see what it claims to see, driven over
+    // text rather than asserted about. A bound added to any module joins the population; a
+    // constant that is not a number does not; and the exported spelling is the same population
+    // as the plain one.
+    assert_eq!(
+        numbers_declared_in("const A_NEW_BOUND_MS = 750;\n"),
+        std::collections::BTreeMap::from([("A_NEW_BOUND_MS".to_owned(), 750)]),
+        "a bound added to a module was invisible to the walk"
+    );
+    assert_eq!(
+        numbers_declared_in("export const A_NEW_BOUND_MS = 750;\n"),
+        std::collections::BTreeMap::from([("A_NEW_BOUND_MS".to_owned(), 750)]),
+        "an exported bound was invisible to the walk"
+    );
+    assert!(
+        numbers_declared_in("const PAINTABLE = { jpeg: \"image/jpeg\" };\n").is_empty(),
+        "a constant that is not a number was counted as a bound"
+    );
+    // …and a declaration written without the spaces this client happens to use is still one.
+    assert_eq!(
+        numbers_declared_in("const A_NEW_BOUND_MS=750;\n"),
+        std::collections::BTreeMap::from([("A_NEW_BOUND_MS".to_owned(), 750)]),
+        "a bound written without spaces around its `=` was invisible to the walk"
+    );
+
+    // Finally the numbers themselves, for the rows this daemon owns: what the page carries is
+    // what this build declares, both directions.
+    for (module, name, value) in reconciled {
+        let asset = web::get(module).expect("a module the table above names");
+        let source = String::from_utf8(asset.bytes().to_vec()).expect("the module is UTF-8");
+        let drift = declares(module, &source, name, value);
         assert!(drift.is_empty(), "{drift:?}");
         // Both directions, driven rather than asserted about: a number that moved in `limits`
         // and not in the page is the whole failure mode, so it is the one that has to be seen.
         assert!(
-            !declares(&source, name, value + 1).is_empty(),
+            !declares(module, &source, name, value + 1).is_empty(),
             "`{name}` was accepted at a value this build does not declare"
         );
         assert!(
-            !declares(&source, &format!("{name}_THAT_IS_NOT_THERE"), value).is_empty(),
+            !declares(module, &source, &format!("{name}_THAT_IS_NOT_THERE"), value).is_empty(),
             "a constant this page does not declare at all was accepted"
+        );
+        // …and the derived population agrees with the row, so the two halves of this check
+        // cannot disagree about what the page says.
+        assert_eq!(
+            declared.get(&(module.to_owned(), name.to_owned())),
+            Some(&value),
+            "the walk and the reconciliation read `{name}` differently"
         );
     }
 }

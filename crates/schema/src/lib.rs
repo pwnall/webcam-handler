@@ -23,6 +23,7 @@
 //! | [`error`] | the closed error registry (D13), and [`error::Failure`] — the document a `--json` refusal prints (note **N127**) |
 //! | [`limits`] | every cap and deadline, and D9's path layout (rubric A14) |
 //! | [`paths`] | the runtime directory the daemon's socket lives in, and the [`paths::Env`] seam (D11/T6) |
+//! | [`mod@file`] | the one bounded door a file a caller named on a command line is read through (note **N329**) |
 //! | [`slug`] | the pinned slug transform (D2) |
 //! | [`vocabulary`] | the generator every closed vocabulary and fault menu is built from |
 //!
@@ -64,6 +65,7 @@ pub mod camera;
 pub mod capture;
 pub mod control;
 pub mod error;
+pub mod file;
 pub mod limits;
 pub mod metrics;
 pub mod pairing;

@@ -1794,13 +1794,27 @@ test("a stale session list is not painted under the camera on screen", async ({ 
 
 // ------------------------------------------------------------- the workbench (D20)
 
-test("the preview and the control being adjusted are visible together at every scroll position", async ({
+test("the preview stays put and a control card is whole on screen at every scroll position", async ({
   page,
 }) => {
-  // Design D20's requirement, stated testably by the design itself and asserted here in the
-  // only place it can be: *the preview and the control being adjusted are simultaneously
-  // visible at every scroll position of the control column, at the rung's pinned viewport
-  // size.* The owner's session at the start of a development run is tuning — eyes on the
+  // Design D20's layout requirement, asserted here in the only place it can be: *the preview
+  // and the control being adjusted are simultaneously visible at every scroll position of the
+  // control column, at the rung's pinned viewport size.* **What this claim holds is the layout
+  // half of that sentence** — the picture never moves and there is a control card wholly on
+  // screen wherever the column is scrolled to — and the title says so, because the strong
+  // reading is not true of this fixture and a title describing a claim the body does not make
+  // is the shape a later reader trusts and is wrong about (note **N333**).
+  //
+  // **Measured rather than argued.** `#column .control:has(input, select)` — a card that
+  // offers something to write — was counted beside the card count at all nine sampled
+  // positions of this run: 3, 3, 2, 2, 5, 5, 6, **0**, 2. The zero is `vivid`'s contiguous run
+  // of ten `HAS_PAYLOAD` cards, which is taller than a 720px viewport, so at that scroll
+  // position no writable card is whole on screen and the strong instrument would go red on a
+  // page that satisfies D20 perfectly well. Which cards are writable is the panel's claim and
+  // is asserted one file over (`a compound control shows the bytes the device reported and
+  // offers nothing to write`); that no scroll position of the column *hides the picture* is
+  // this one, and nothing asserts "a writable control is on screen at every scroll position",
+  // because the fixture says it is not a true sentence. The owner's session at the start of a development run is tuning — eyes on the
   // preview, hands on the controls — and before this shell the page was a single scrolling
   // document: 3359px tall, its control panel beginning below the fold and running 2395px, so
   // adjusting anything at all meant scrolling the picture off the screen. Those three figures
@@ -1842,9 +1856,22 @@ test("the preview and the control being adjusted are visible together at every s
     const previewNow = await preview.boundingBox();
     expect(previewNow).toEqual(previewBefore);
 
-    // …and something in the column is adjustable *here*, which is what "the control being
+    // …and there is a control on the screen *here*, whole, which is what "the control being
     // adjusted" means at this scroll position.
-    const adjustable = page.locator("#column .control input, #column .control select");
+    //
+    // **A card, not an `<input>`, and the difference is a defect this claim was passing on.**
+    // `vivid` carries a run of ten controls the device flags `HAS_PAYLOAD` — `string`,
+    // `u32_1_element_array`, the two matrices, `area`, `rect`, `s32_2_element_array`,
+    // `s64_5_element_array` — whose values are `elems × elem_size` bytes behind a pointer, and
+    // `controls.js` shows those and does not write them (note **N310**). Three of them used to
+    // carry a number or text field anyway, because the panel chose its widget from `type.kind`
+    // and never from the flag, and every write those fields could make came back `device_io …
+    // (errno 22)`. So this assertion was reading a column position as "adjustable" on the
+    // strength of widgets no device would accept, and a run of unwritable cards is a stretch an
+    // operator scrolls through with the picture beside them like any other. The layout
+    // requirement is about the picture and the card; which cards are writable is the panel's
+    // claim, one test file over, and it is asserted there.
+    const adjustable = page.locator("#column .control");
     const onScreen = await adjustable.evaluateAll(
       (nodes, viewport) =>
         nodes.filter((node) => {
@@ -2444,9 +2471,12 @@ test("a double-click on Sweep next is one sweep, and the page says so once", asy
   await expect(status).toHaveText(/ swept — pick the sample that looks right$/, { timeout: 20_000 });
 
   const said = await page.evaluate(() => window.wchSaid);
-  // **One sweep was started, not two.** Red at 2 with the synchronous `flow.sweeping = true;
-  // paint(nodes);` taken off the top of `sweep()`, where the second half of the double-click
-  // finds the button still enabled and is handed the same control.
+  // **One sweep was started, not two.** Red at 2 with `run()`'s two synchronous statements —
+  // `flow.inFlight += 1; paint(nodes);` — removed, where the second half of the double-click
+  // finds the button still enabled and is handed the same control. The fence was `sweep()`'s own
+  // two lines when this claim landed and moved to `run()` at P9d, because `start()` turned out
+  // to have the identical shape and a louder ending; the claim beside this one drives it there
+  // and both go red on the same deletion.
   expect(said.filter((entry) => /^sweeping [a-z_]+ in \d+ step\(s\)…$/.test(entry.said))).toHaveLength(
     1,
   );
@@ -2755,4 +2785,415 @@ test("a refusal about a session nobody is looking at is not painted in red over 
   );
   await expect(page.locator("#flow-status")).not.toHaveClass(/failed/);
   expect(await page.locator("#flow-status").textContent()).toBe(before);
+});
+
+// ------------------------------------------------- the P7e/P8d/P9d review's own findings, driven
+//
+// Five arms below and one in the flow's block above are the G9 lens's confirmed and narrowed
+// findings turned into claims of this rung. Every one of them is about something the page must
+// *not* do, and every one has its positive control beside it, because "the element stayed empty"
+// is satisfied by a page that never fills it.
+
+test("a photo answer in flight is not painted under the next camera's card", async ({ page }) => {
+  // **docs/11 M32's fifth element, and the one painter that had no fence** (notes **N154**,
+  // **N156**). `takePhoto` handed `photo.take` the camera and painted whatever came back.
+  // `state.taking` disables `#take-photo` and nothing disables the camera buttons — and a
+  // `wch_photo` is a device open, settle frames \[PF:11\] and a capture, seconds of it — so an
+  // operator who clicked another camera during one got the walked-away-from camera's frame in
+  // the slot index.html calls "a shot an operator asked for and kept", under the name of the
+  // camera now on screen and a negotiation that camera cannot perform. `select` empties the slot
+  // on the way past; the answer filled it in again.
+  //
+  // The answer is **held** rather than raced, for the reason the session claims give: what is
+  // under test is an arrival, so the arrival is arranged.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  // **The positive control first, and it is the whole of the claim's meaning.** A held answer
+  // released with nobody having moved *is* painted; without this, every assertion below is
+  // satisfied by a page that never shows a photograph at all.
+  wire.hold((request) => request.method === "wch_photo");
+  await page.locator("#take-photo").click();
+  await expect.poll(() => wire.held()).toBe(1);
+  wire.hold(() => false);
+  expect(wire.release()).toBe(true);
+  await expect(page.locator("#photo-frame")).toHaveAttribute(
+    "src",
+    /^data:image\/jpeg;base64,/,
+  );
+  await expect(page.locator("#photo-report")).toContainText(
+    /frame\(s\) discarded while the sensor settled \[PF:11\]/,
+  );
+
+  // …and now the same arrival across a camera switch.
+  wire.hold((request) => request.method === "wch_photo");
+  await page.locator("#take-photo").click();
+  await expect.poll(() => wire.held()).toBe(1);
+  await page.locator(`#camera-list button[data-camera="${secondCameraId}"]`).click();
+  await expect(
+    page.locator(`#camera-list button[data-camera="${secondCameraId}"]`),
+  ).toHaveAttribute("aria-pressed", "true");
+  // The slot really is empty at the moment of the switch, which is what makes the assertions
+  // after the release about the *answer* rather than about the switch that preceded it.
+  await expect(page.locator("#photo-frame")).not.toHaveAttribute("src", /./);
+
+  wire.hold(() => false);
+  expect(wire.release()).toBe(true);
+  // Delivery is established rather than assumed, exactly as the stale-session claims establish
+  // it: a WebSocket delivers in order, so a page that has reported its closure has already run
+  // its handler for every frame in front of it. `socketClosed` touches the preview and the
+  // recording line and nothing in the photo slot, so it cannot be what these three read.
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+
+  // **Red at a `data:image/jpeg;base64,…` src and a full report**, with `stillWanted()` taken out
+  // of `photo.js`'s success arm — the walked-away-from camera's picture under the current
+  // camera's name.
+  expect(await page.locator("#photo-frame").getAttribute("src")).toBe(null);
+  expect(await page.locator("#photo-report").textContent()).toBe("");
+});
+
+test("a photo refused for a camera nobody is looking at writes nothing under the next one", async ({
+  page,
+}) => {
+  // The louder half of the claim above, and the half the finding's own reproduction argued for
+  // rather than showed: `photo.take`'s `catch` writes a D13 sentence into `#photo-status`, and a
+  // refusal about the previous camera is still about the previous camera. `busy` is chosen
+  // because it is the one an operator would act on — retry — and acting on it about the wrong
+  // camera is the cost.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  // The positive control: a refusal about the camera on screen *is* rendered, with its D13 name
+  // kept, which is AGENTS rule 7 arriving at a person.
+  wire.refuse((request) => request.method === "wch_photo", {
+    code: -32010,
+    message: "/dev/video0 is busy: this process is already streaming it",
+    data: { kind: "busy" },
+  });
+  await page.locator("#take-photo").click();
+  await expect(page.locator("#photo-status")).toHaveText(
+    "busy: /dev/video0 is busy: this process is already streaming it",
+  );
+  await expect(page.locator("#photo-status")).toHaveClass(/failed/);
+
+  // …and the same refusal, held across a camera switch. `refuse` and `hold` compose, which is
+  // what `interposed` says they are for: a late refusal and a late answer are two arrivals.
+  wire.hold((request) => request.method === "wch_photo");
+  await page.locator("#take-photo").click();
+  await expect.poll(() => wire.held()).toBe(1);
+  await page.locator(`#camera-list button[data-camera="${secondCameraId}"]`).click();
+  await expect(page.locator("#photo-status")).toHaveText("");
+
+  wire.hold(() => false);
+  expect(wire.release()).toBe(true);
+  wire.close();
+  await expect(page.locator("#connection")).toHaveText(
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed",
+  );
+
+  // **Red at `busy: /dev/video0 is busy: this process is already streaming it`, in the refusal
+  // colour**, with `stillWanted()` taken out of `photo.js`'s `catch` arm.
+  expect(await page.locator("#photo-status").textContent()).toBe("");
+  await expect(page.locator("#photo-status")).not.toHaveClass(/failed/);
+});
+
+test("a call still on the wire when the socket dies does not rewrite the page's last sentence", async ({
+  page,
+}) => {
+  // **app.js's own ownership rule, broken by the two writers that had no guard.** `rpc.js`'s
+  // close handler rejects every pending call and tells every subscription *before* it calls
+  // `onClose` — "Last, and the order is the point" — so `socketClosed` writes the page's final
+  // sentence and the rejections' microtasks run afterwards, on top of it. `listRefused` and
+  // `watchDevices`' `catch` both open with the word `connected`, so what an operator was left
+  // reading on a dead connection was `connected; this daemon refused to list its cameras (the
+  // connection to webcam-handler-daemon closed) …` — and the one piece of advice they can act
+  // on, reload the URL the daemon printed, was gone. The `ended` callback beside the second of
+  // them declines on this exact sentinel and argues the case at length; the two `catch` arms did
+  // not have it. This is `#connection`'s third wrong sentence (E16 §2, then P5e).
+  //
+  // Both arms are here because they are two writers of one element, and the finding was found on
+  // one of them.
+  const wire = await interposed(page);
+
+  // Every value `#connection` ever holds, in order — the defect is a *last* writer, so a claim
+  // that read the element once could not tell "never written" from "written and overwritten".
+  await page.addInitScript(() => {
+    window.wchBanner = [];
+    addEventListener("DOMContentLoaded", () => {
+      const line = document.querySelector("#connection");
+      window.wchBanner.push(line.textContent);
+      new MutationObserver(() => window.wchBanner.push(line.textContent)).observe(line, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+    });
+  });
+
+  const closed =
+    "the connection to webcam-handler-daemon closed; reload the URL webcam-handler-daemon printed";
+
+  // **Arm 1 — the `wch_list` this daemon always answers, held across the close.** It is the last
+  // call `main()` makes, so holding it leaves the page fully up with exactly one question out.
+  wire.hold((request) => request.method === "wch_list");
+  await page.goto(readyToOpenUrl);
+  await expect(page.locator("#connection")).toHaveText("connected");
+  await expect.poll(() => wire.held()).toBe(1);
+  wire.close();
+
+  await expect(page.locator("#connection")).toHaveText(closed);
+  // **Red at `connected; this daemon refused to list its cameras (the connection to
+  // webcam-handler-daemon closed), so the camera list beside this line is empty or stale rather
+  // than this machine's`** with the `SOCKET_CLOSED` guard removed from `listRefused`. The
+  // sequence is asserted as well as the final value, because a page that wrote the wrong
+  // sentence and then somehow corrected itself is not a page that declined to write.
+  const afterList = await page.evaluate(() => window.wchBanner);
+  expect(afterList.at(-1)).toBe(closed);
+  expect(afterList.filter((said) => said.startsWith("connected;"))).toEqual([]);
+
+  // **Arm 2 — `wch_subscribe_events`, which `main()` awaits before the list.** Holding it puts a
+  // *subscribe* call on the wire at the close instead, which is the other `catch` and the wider
+  // half of the class. `wire.held()` is cumulative across the two page loads, so this waits for
+  // the second.
+  wire.hold((request) => request.method === "wch_subscribe_events");
+  await page.goto(readyToOpenUrl);
+  await expect(page.locator("#connection")).toHaveText("connected");
+  await expect.poll(() => wire.held()).toBe(2);
+  wire.close();
+
+  await expect(page.locator("#connection")).toHaveText(closed);
+  // **Red at `connected; this daemon cannot watch for device changes (the connection to
+  // webcam-handler-daemon closed), so the camera list is a snapshot`** with the guard removed
+  // from `watchDevices`' `catch`.
+  const afterSubscribe = await page.evaluate(() => window.wchBanner);
+  expect(afterSubscribe.at(-1)).toBe(closed);
+  expect(afterSubscribe.filter((said) => said.startsWith("connected;"))).toEqual([]);
+
+  // **The positive control, and it is what stops the fix being "never write the sentence".** The
+  // same `wch_list`, refused by a daemon on a socket that is perfectly alive, still reaches the
+  // banner — which is D1's "an empty enumeration is diagnosed, not shrugged at" reaching a
+  // person.
+  wire.hold(() => false);
+  wire.refuse((request) => request.method === "wch_list", {
+    code: -32012,
+    message: "camera /dev/video0 is gone (unplugged, or its driver unbound)",
+    data: { kind: "device_gone", path: "/dev/video0" },
+  });
+  await page.goto(readyToOpenUrl);
+  await expect(page.locator("#connection")).toHaveText(
+    "connected; this daemon refused to list its cameras (device_gone: camera /dev/video0 is " +
+      "gone (unplugged, or its driver unbound)), so the camera list beside this line is empty " +
+      "or stale rather than this machine's",
+  );
+});
+
+test("a compound control shows the bytes the device reported and offers nothing to write", async ({
+  page,
+}) => {
+  // **N135's defect class, in the third surface and the one the repair did not walk.** Write
+  // dispatch is the *descriptor's* decision — `HAS_PAYLOAD`, never the caller's value variant —
+  // and `webcam-handler-v4l2`'s `set` has exactly two accepting arms, `(false, Int)` and
+  // `(true, Bytes)`. `controls.js` chose its widget and its `ControlValue` variant from
+  // `type.kind` alone and never read the flag, which sits in `desc.flags.known` beside three
+  // names the same file already reads.
+  //
+  // The camera is the **77-control** one, because it is the only profile in `corpus/` that
+  // carries compound controls at all — the seed fixture's one payload control is also an
+  // `Unknown` *type*, so it took the payload arm by accident and the flag was never the thing
+  // being read. `vivid` has ten, and three of them declared an ordinary scalar type.
+  await openClient(page);
+  await page.locator(`button[data-camera="${wideCameraId}"]`).click();
+  await expect(page.locator("#controls-status")).toHaveText(/^77 controls/);
+
+  // `s32_2_element_array` is `type.kind: "integer"`, `flags.known: [has_payload,
+  // has_which_min_max]`, `elems: 2`, `elem_size: 4`. Painted as a scalar it showed an **empty**
+  // number field under the note "no slider … the device did not say where" — a sentence about a
+  // control the device had described in full — and every value typed into it went out as
+  // `{kind:"int"}` and came back `device_io … (errno 22)`.
+  const array = control(page, "s32_2_element_array");
+  await expect(array.locator(".widget .mono")).toHaveText("8 bytes · 02 00 00 00 02 00 00 00");
+  await expect(array.locator(".widget .note")).toHaveText(
+    "a compound value this panel shows and does not write · 2 × 4 bytes",
+  );
+  // **Red on today's build in both halves**: the bytes were nowhere on the card, and the field
+  // was there to be typed into.
+  await expect(array.locator("input")).toHaveCount(0);
+  await expect(array.locator("select")).toHaveCount(0);
+
+  // …and the same for the one whose *type* is a string, which had a text field producing
+  // `{kind:"text"}` — a variant no V4L2 device accepts, because a kernel `STRING` control always
+  // carries `HAS_PAYLOAD` and so never reaches that widget on real hardware.
+  const string = control(page, "string");
+  await expect(string.locator(".widget .mono")).toHaveText("5 bytes · 20 20 00 00 00");
+  await expect(string.locator("input")).toHaveCount(0);
+
+  // **The red-on-inverse, and without it the four assertions above are satisfied by a panel that
+  // draws no widgets at all.** `brightness` on the same camera is the same declared type —
+  // `integer` — and is *not* flagged, so it keeps its slider and its number field: the flag is
+  // what separates them, and nothing else about the two descriptors does.
+  const scalar = control(page, "brightness");
+  await expect(scalar.locator("input[type=range]")).toHaveCount(1);
+  await expect(scalar.locator("input[type=number]")).toHaveValue("128");
+});
+
+test("a camera switch takes the sentence about the session with it", async ({ page }) => {
+  // **A state a failure strands with no verb out, plus the line that hides it** (AGENTS rule 7,
+  // docs/11 **H2**; note **N279**'s class one element along). `watching()` drops every other
+  // trace of the session on a camera switch — the id, the control under review, the document,
+  // the grid, the pane — and left `#flow-status` standing. So after a switch the page read
+  // `session <uuid> started for <task>` over a `#flow` whose `data-session` is empty and whose
+  // four verbs are disabled: an operator told a session is open, offered no verb that touches
+  // it, and given nothing that says why. Start then answers `session_conflict … resume it, or
+  // finish it before starting another` — a D13 refusal whose instruction names an action this
+  // surface does not have, which is the owner's question and not this claim's.
+  await openClient(page);
+  const status = page.locator("#flow-status");
+
+  const task = "p9d a session the operator walks away from";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-start").click();
+  // The positive control: the sentence is written, and it names the session.
+  await expect(status).toContainText("started for " + task);
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", /[0-9a-f-]{36}/);
+
+  await page.locator(`#camera-list button[data-camera="${secondCameraId}"]`).click();
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", "");
+  await expect(page.locator("#flow-plan")).toBeDisabled();
+  // **Red at `session <uuid> started for p9d a session the operator walks away from`**, with the
+  // two statements taken back out of `watching()`.
+  await expect(status).toHaveText("");
+
+  // …and the colour goes with the words. A refusal is arranged on the camera the page is now
+  // showing — the same task twice, which is what `session_conflict` is — and then walked away
+  // from: a red line under a camera it is not about is the same wrong statement, and louder.
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-start").click();
+  await expect(status).toContainText("started for " + task);
+  await page.locator("#flow-start").click();
+  await expect(status).toHaveClass(/failed/);
+
+  await page.locator(`#camera-list button[data-camera="${cameraId}"]`).click();
+  await expect(status).toHaveText("");
+  await expect(status).not.toHaveClass(/failed/);
+});
+
+test("a double-click on Start is one session, and the page says so once", async ({ page }) => {
+  // **N279's defect class in the sibling button, with the louder ending.** `sweep()` was made
+  // non-re-entrant at the door and `start()` was not: `paint()` disabled Start on `!hasCamera ||
+  // flow.sweeping`, so the second half of an ordinary double-click ran a whole second `start()`.
+  // Two `wch_calibrate_start` went out from one gesture — 28 unarranged runs out of 28, in the
+  // review that found it — the daemon refused the loser, and the page painted `session_conflict:
+  // … is still open for this camera and task (…); resume it, or finish it before starting
+  // another` in the refusal colour **about the session it had just created and was holding**.
+  // `start`'s own `read !== reads` fence cannot see it: a refusal throws out of `rpc.call` in
+  // front of that check, so the fence covers the quiet half and not the loud one.
+  //
+  // The guard now lives in `run()`, which every one of the flow's buttons and every sample click
+  // already goes through, so Plan, Apply and Restore — re-entrant the same way and benign only
+  // because the daemon happens to be idempotent about them — are covered by the same statement.
+  const wire = await interposed(page);
+  await openClient(page);
+
+  const task = "p9d one click or two";
+  await page.locator("#flow-task").fill(task);
+
+  // Every sentence `#flow-status` holds, with the class it held it in — N279's own instrument,
+  // for its reason: the defect is a line that is right at one instant and wrong afterwards, so a
+  // claim that read the node once at the end would miss it in one direction and be satisfied by
+  // luck in the other.
+  await page.evaluate(() => {
+    window.wchSaid = [];
+    const line = document.querySelector("#flow-status");
+    new MutationObserver(() => {
+      window.wchSaid.push({ said: line.textContent, failed: line.classList.contains("failed") });
+    }).observe(line, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+  });
+
+  const status = page.locator("#flow-status");
+  await page.dblclick("#flow-start");
+  await expect(status).toContainText("started for " + task);
+  await expect(page.locator("#flow")).toHaveAttribute("data-session", /[0-9a-f-]{36}/);
+
+  // **One `wch_calibrate_start` was answered, not two.** Red at 2 with `run()`'s two synchronous
+  // statements removed, where the second half of the double-click finds Start still enabled.
+  expect(wire.answered("wch_calibrate_start")).toBe(1);
+
+  const said = await page.evaluate(() => window.wchSaid);
+  // **Nothing was refused, and no sentence was ever painted in the refusal colour.** Red at
+  // `session_conflict: …` on the same mutation, and red on the colour alone if the success
+  // sentence survives under a class the loser left behind.
+  expect(said.filter((entry) => /session_conflict/.test(entry.said))).toEqual([]);
+  expect(said.filter((entry) => entry.failed)).toEqual([]);
+  await expect(status).not.toHaveClass(/failed/);
+});
+
+test("the pane comes back when the sweep's ending does not, on the bound the page declares", async ({
+  page,
+}) => {
+  // **`SWEEP_ENDING_WAIT_MS`, driven from the side nothing drove.** `handBackPane` races the
+  // sweep's own terminal event against that bound, and on the ordinary path the event is already
+  // queued behind the answer — so every arm in this rung that sweeps resolves on the *event*,
+  // and the number could have drifted anywhere upward with nothing going red (note **N313**).
+  // The bound exists for the case the event never arrives, which is a socket dying between an
+  // ending `engine::calibrate` guarantees and a delivery no daemon can: a pane that waited for
+  // it forever is the state with no verb out that AGENTS rule 7 and docs/11 **H2** name.
+  //
+  // The other side of the bound is `the sweep-time pane becomes the sweep and paints each sample
+  // as its event lands`, whose `shown` sequence is `[true, false]` on the path where the ending
+  // wins. This is the arm where the bound does.
+  const wire = await interposed(page);
+  await openClient(page);
+  await expect(page.locator("#preview-status")).toContainText("streaming");
+
+  const task = "p9d an ending that never arrives";
+  await page.locator("#flow-task").fill(task);
+  await page.locator("#flow-samples").fill("3");
+  await page.locator("#flow-start").click();
+  await expect(page.locator("#flow-status")).toContainText("started for " + task);
+  await page.locator("#flow-plan").click();
+  await expect(page.locator("#flow-status")).toContainText(/^planned \d+ control\(s\)$/);
+
+  // The sweep's own ending, held on the wire. A subscription frame carries no `id`, so the
+  // predicate reads the event rather than a request — every answer this proxy carries has
+  // `params` undefined and cannot match.
+  wire.hold(
+    (_request, frame) =>
+      frame.params?.result?.progress === "sweep_finished" ||
+      frame.params?.result?.progress === "sweep_interrupted",
+  );
+  await page.locator("#flow-sweep").click();
+
+  const view = page.locator("#sweep-view");
+  await expect(view).toBeVisible();
+  // The ending really is held: the pane was handed the sweep and never told it was over.
+  //
+  // **At least one, not exactly one, and that is a measurement rather than a loosening.**
+  // `wire.held` is an append-only array of every frame matching the predicate above, and this
+  // predicate matches both terminal spellings; the sweep is still running on the daemon while
+  // these two lines execute, so nothing fences a second matching frame out of the gap between
+  // them. Asserting an exact count of asynchronously arriving frames at an unfenced instant is
+  // a race, and it fired: two of five workspace runs of this rung failed, one of them here with
+  // `Expected: 1 / Received: 2` (note **N332**). What the claim is about is that the pane came
+  // back **while its ending was still held**, which is a fact about there being an unheld-back
+  // ending at all — so that is what both lines assert.
+  await expect.poll(() => wire.held(), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+
+  // **The bound fired, and it is asserted as an ordering rather than as a duration.** The pane
+  // comes back while its ending is still sitting on the wire — with the `setTimeout` arm taken
+  // out of `handBackPane`'s `Promise.race`, this line never resolves and the claim goes red on
+  // *the pane never came back*, which is the failure the bound exists to prevent.
+  await expect(view).toBeHidden({ timeout: 20_000 });
+  expect(wire.held()).toBeGreaterThanOrEqual(1);
+
+  // …and the preview has the slot back, which is what "comes back" is for.
+  await expect(page.locator("#preview-status")).toContainText("streaming");
 });

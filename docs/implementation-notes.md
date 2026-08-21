@@ -28780,3 +28780,1215 @@ not survive: *when an arm asserts that something did not happen, what makes the 
 the right one?* A count of turns answers it only when everything that could have happened runs on
 the same thread the count is being made on — and here the racer was on another one, three lines
 above, put there by the arm itself.
+
+## N310 — Four painters got the fence and the fifth kept the picture
+
+**Date:** 2026-08-21. **Subject:** `crates/web/assets/app.js`'s `takePhoto`, `select` and the new
+`state.photoView`; `crates/web/assets/photo.js`'s `take`. **Class:** docs/11 **M32** — a stale
+answer painted under the camera that replaced it (notes **N154**, **N156**) — in the one element
+of the five that never got the repair.
+
+The panel, the recording line, the session list and the flow's document each carry a fence over
+the same arrival: an answer the page asked for about a camera the operator has since walked away
+from, dropped in silence because it is not a failure and there is nobody left to tell. The photo
+slot did not. `takePhoto` set `state.taking`, handed `photo.take` the camera, and painted
+whatever came back.
+
+**The gesture needs no timing trick.** `state.taking` disables `#take-photo` and nothing disables
+the camera buttons, and a `wch_photo` is a device open, the settle frames \[PF:11\] and a capture
+— seconds of it. The G9 lens of the P7e/P8d/P9d review measured the result in the pinned Chromium
+against a live daemon: with the answer held on the wire, a click on `cam:vivid` correctly emptied
+the slot, and the released answer then filled it with a 4,268,551-character `data:image/jpeg`
+`src` and the report `2592×1944 · the camera's own MJPG bytes, untouched / negotiated MJPG
+2592×1944 at 30 fps / …` — under the name of a camera whose own preview, one element above, was
+at that moment refusing *"format MJPG is unavailable; YUYV, NV12, GREY would be accepted"*. A
+frame from the camera the operator walked away from, in the slot `index.html` calls "a shot an
+operator asked for and kept", labelled with a negotiation the camera on screen cannot perform.
+The refusal arm was the same: `take`'s `catch` writes the previous camera's D13 sentence into
+`#photo-status`.
+
+**The fence is a counter bumped by the camera switch, and the reason is not `refreshControls`'.**
+That module's counter exists because two answers about the *same* camera can arrive out of order,
+which this daemon produces by spawning a task per inbound message. That case is unreachable here
+and the review's verifier said so: `takePhoto` sets `taking` and `refreshTakePhoto` disables the
+button synchronously, in the same task as the click, so at most one `wch_photo` is ever in
+flight. What a comparison of camera ids *cannot* see, and what makes this a number rather than an
+id, is an operator who walks to another camera and back while the capture runs — the ids match
+again and the answer is still a picture of a slot `select` has twice emptied. Borrowing the other
+module's argument would have been a fence held up by a sentence that is false of this path.
+
+`photo.take` takes the predicate as a **required** argument with no default, because a default
+that painted is a fence a caller can forget by saying nothing, and this module has one caller.
+
+**Red on the inverse, driven:** `a photo answer in flight is not painted under the next camera's
+card` and `a photo refused for a camera nobody is looking at writes nothing under the next one`,
+both in the browser rung, each with its positive control beside it — the same held answer
+released with nobody having moved *is* painted, and the same refusal on the camera it is about
+*is* rendered with its D13 name. With `stillWanted()` deleted from `show`'s arm the first goes
+red at `Expected: null / Received: "data:image/jpeg;base64,…"`; deleted from the `catch` arm the
+second goes red at `Expected: "" / Received: "busy: /dev/video0 is busy: this process is already
+streaming it"`.
+
+**Retires when:** nothing retires it. What generalises is the shape of the omission: four
+modules were repaired for one class in one pass, the fifth was not, and no check existed whose
+population was *the painters*. The rung now holds five of them and a sixth would be a claim
+somebody has to remember to write.
+
+## N311 — Two writers said "connected" after the connection ended, because the close handler runs them last on purpose
+
+**Date:** 2026-08-21. **Subject:** `crates/web/assets/app.js`'s `listRefused` and `watchDevices`'
+`catch` arm; `crates/web/assets/rpc.js`'s close handler. **Class:** a writer making a statement it
+cannot know — the rule `app.js`'s own header states, broken in the third and fourth writer of
+`#connection`.
+
+`#connection` is this page's single sentence about the daemon and five places write it. The rule
+its header states is that **no writer may make a statement it cannot know, and the last writer
+that still can wins**; `socketClosed` is final, because from that point the page's only advice is
+to reload the URL the daemon printed.
+
+**The ordering is structural rather than unlucky.** `rpc.js`'s close handler rejects every
+pending call and tells every registered subscription *before* it calls `onClose` — "Last, and the
+order is the point" — so `socketClosed` writes synchronously and the rejections' microtasks run
+afterwards, on top of it. A `wch_list` in flight at the close therefore ended the page reading:
+
+    connected; this daemon refused to list its cameras (the connection to webcam-handler-daemon
+    closed), so the camera list beside this line is empty or stale rather than this machine's
+
+in the failure colour, on a page whose connection had ended — the word `connected` on a dead
+connection, and the one instruction an operator can act on gone. `watchDevices`' `catch` has the
+identical hole for a rejected `wch_subscribe_events`, and the guard it needs is *twenty lines
+above it*, on the `ended` callback, with a comment arguing the case at length for the other
+arrival of the same fact. `listRefused` became a `catch` handler in the N155 repair that made
+this reachable and never got one. This is `#connection`'s third wrong sentence: E16 §2 found the
+first, P5e the second.
+
+Both now decline on `rpc.js`'s `SOCKET_CLOSED` sentinel, compared by **identity**, as
+`recording.js` and `calibration.js` already compare it — a daemon that sends a `kind` of
+`socket_closed` cannot forge it.
+
+**Red on the inverse, driven:** `a call still on the wire when the socket dies does not rewrite
+the page's last sentence` holds a `wch_list` across a close in one arm and a
+`wch_subscribe_events` in the other, records every value `#connection` ever holds through a
+`MutationObserver`, and asserts both the final value and that no value after it opens with
+`connected;`. Each guard removed reddens its own arm at exactly the sentence quoted above. The
+positive control is the same `wch_list` refused on a socket that is alive, whose sentence still
+reaches the banner — without it the repair could be "stop writing the sentence at all".
+
+**Retires when:** nothing retires it. The durable half is that this element's rule is enforced
+per writer and nothing walks the writers: the header names five, and a sixth added tomorrow
+inherits nothing.
+
+## N312 — The panel chose a control's shape from its type, which is N135's law in the surface the repair did not walk
+
+**Date:** 2026-08-21. **Subject:** `crates/web/assets/controls.js`'s `widgetFor`, and the new
+`unwritableBecause`. **Class:** write dispatch is the *descriptor's* decision, never the caller's
+value variant (design §2.3, note **N135**), plus AGENTS rule 6 — a value the device reported,
+dropped from the panel.
+
+`webcam-handler-v4l2`'s `set` matches `(has_payload(flags), &value)` and has exactly two
+accepting arms, `(false, Int)` and `(true, Bytes)`; `webcam-handler-fake` was moved onto the same
+flag when N135 found it on the wrong side of it. The flag and the type separate on an **array**
+control, where the kernel keeps the element type and sets `HAS_PAYLOAD` because the value is
+`elems × elem_size` bytes behind a pointer. The client read `desc.type.kind` alone and never the
+flag — which sits in `desc.flags.known` beside three names the same file already reads for
+`readOnlyReason`.
+
+**Measured against the committed `vivid` profile, in the pinned Chromium.** `s32_2_element_array`
+arrives as `type.kind: "integer"`, `flags.known: [has_payload, has_which_min_max]`, `elems: 2`,
+`elem_size: 4`, `current: {kind: "bytes", …}`. `currentInt` answers `null` for a bytes value, so
+`scalar()` took its no-current branch: an **empty** number field under the note *"no slider,
+because a slider would have to be drawn somewhere and the device did not say where"* — a sentence
+about a control the device had described in full — and the eight reported bytes nowhere on the
+card, while the neighbouring `u32_1_element_array` showed `4 bytes · 18 00 00 00`. Typing 7 into
+that field sent `{"control":"s32_2_element_array","value":{"kind":"int","value":7}}` and got back
+`device_io … VIDIOC_S_EXT_CTRLS (s32_2_element_array) failed (errno 22)`. `s64_5_element_array`
+was the same card, and `string` was worse: a text field producing `{kind:"text"}`, a variant no
+V4L2 device accepts, because a kernel `STRING` control always carries `HAS_PAYLOAD` and so never
+reaches that widget on real hardware. `webcam-handler-cli controls cam:vivid` printed
+`s32_2_element_array int -10..10 … <8 bytes> payload,has-min-max` for the same control: the
+population closed on the CLI and open on its sibling surface.
+
+**The sentence is one home, and that is a finding of the repair rather than of the defect.** A
+flag branch with a message of its own takes the raw discriminant off `region_of_interest_
+rectangle`, which the seed fixture makes *both* an `Unknown` type and a payload control — and
+that discriminant is the one number an operator can look up, which is the whole of what rule 6
+keeps there. The first draft of this repair did exactly that and the rung's PF:1 claim went red
+on it. So `unwritableBecause` walks `ControlType`'s vocabulary once for the sentence, the flag
+branch and the type walk's tail both ask it, and the three things the panel can be sure of stay
+told apart: a type the kernel emitted that this *build* cannot name; a type it names whose value
+is a payload; and a kind this *page* has not been taught, which is a schema that grew.
+
+**One thing this repair does not settle**, recorded because it belongs to another lens: `text()`
+is now reached only by a `string` control the device did *not* flag, which
+`crates/backends/fake/src/camera.rs`'s `with_initial_value` produces and `text_write` accepts,
+and which the V4L2 backend has no arm for because no kernel emits it. A fake capability no real
+device exhibits is a bug in the fake (E5, PF:17, note **N136**); it is an R2 resemblance question
+and not this file's.
+
+**A claim was passing because of this defect.** `the preview and the control being adjusted are
+visible together at every scroll position` sampled the 77-control column and asserted that some
+`<input>`/`<select>` was fully on screen at each position. `vivid` has a run of ten payload
+controls; three of them carried a writable field only because the panel read the type, so the
+run had adjustable-looking widgets in it. With the flag read, that stretch has none — and it is a
+stretch an operator scrolls through with the picture beside them like any other. The layout
+requirement is about the picture and the card, so the claim now reads the **card**; which cards
+are writable is asserted by the claim below, where it belongs.
+
+**Red on the inverse, driven:** `a compound control shows the bytes the device reported and
+offers nothing to write`, over the wide camera. With the flag branch deleted it goes red at
+`Expected: "8 bytes · 02 00 00 00 02 00 00 00" / Received: ""` on the reading half and at
+`toHaveCount 0 / Received: 1` on the writing half. The red-on-inverse is `brightness` on the same
+camera: the same declared type, not flagged, keeping its slider and its number field — the flag
+is what separates them and nothing else about the two descriptors does.
+
+**Retires when:** nothing retires it. What generalises is N135's own shape a third time: the law
+was written at the backend trait, closed on two implementations, and the third *consumer* of the
+same descriptor was never asked. The question to put to any such law is not "are both backends
+right" but "who else reads this descriptor and decides something with it".
+
+## N313 — The check that reconciles the page's bounds walked two rows of one module, and the batch before it added a bound in another
+
+**Date:** 2026-08-21. **Subject:**
+`crates/daemon/tests/web_client.rs`'s `the_bounds_the_page_runs_on_are_the_ones_this_build_
+declares`, `numbers_declared_in` and `numbers_the_client_declares`; `calibrate-flow.js`'s
+`SWEEP_ENDING_WAIT_MS`. **Class:** a hand-written population beside a derived one — N307's class,
+in the check whose sibling in the same file already argued the point.
+
+AGENTS puts every bound in `schema::limits`, asks that something read each one, and asks a test
+to drive each from both sides (N255). A browser cannot `use` a Rust constant, so the two the
+client needs are a second copy, and the check that reconciles them read `web::get("rpc.js")` and
+walked a **two-row array literal**. `grep -c 'const [A-Z][A-Z_0-9]* = [0-9]' crates/web/assets/
+*.js` answers **9**. Two were reconciled and seven were invisible, and one of the seven —
+`SWEEP_ENDING_WAIT_MS`, landed by the batch immediately before the review — is a bound in AGENTS'
+own sense, whose doc comment says so: *"a bound rather than a wait, because a state a failure
+strands with no verb out is the defect AGENTS rule 7 names (docs/11 H2)"*.
+
+Its sibling in the same file, `the_urls_the_page_builds_are_the_routes_this_daemon_serves`,
+derives its population out of the asset and says why in as many words: *"a route the page learns
+to build and nobody gated is as much a finding as a gated route the page can no longer reach, and
+neither is visible to a check that walks a hand-written table."* One check in that file took the
+lesson and its neighbour did not, and the next batch added a member the neighbour could not see.
+
+**The population is now derived and the partition is asserted both ways.** Every `const NAME =
+<number>;` in every module `web::paths()` lists is either a row this daemon owns — reconciled
+against the `limits` constant it copies, both directions, as before — or a row that is the
+**client's own**, carrying the reason `limits` is the wrong home for it. The exemptions defend
+that clause rather than dodge it: `limits`' law is that something reads each constant, and a
+number no Rust would ever read is a constant kept honest by nothing, so what keeps each of these
+honest is named in the cell beside it. Seven rows: two presentational, one form default, two
+halves of a wait on this page's own `<img>`, one poll interval `recording.js`'s header already
+argues against `CLIENT_RECORD_POLL_MS`, and `SWEEP_ENDING_WAIT_MS`.
+
+**Driven both ways:** the parser is a pure function over text, so the arms feed it source this
+tree does not carry — a new bound is seen, an exported one is seen, a constant that is not a
+number is not. The partition is driven over a fabricated population in both directions. And the
+walk was proven able to see a module the old check never opened: a `const
+A_BOUND_NOBODY_RECONCILED_MS = 750;` appended to `preview.js` — a file with no numbers in it at
+all — reddens the partition at exactly that pair.
+
+**And the bound itself is now driven from both sides.** `handBackPane` races the sweep's terminal
+event against `SWEEP_ENDING_WAIT_MS`, and on the ordinary path the event is already queued behind
+the answer — so *every* sweeping arm in the rung resolved on the event and the number could have
+drifted anywhere upward with nothing going red. The new claim `the pane comes back when the
+sweep's ending does not, on the bound the page declares` holds the terminal event on the wire and
+asserts the pane comes back **while it is still held**, which is an ordering rather than a
+duration; the other side is `the sweep-time pane becomes the sweep and paints each sample as its
+event lands`, whose `shown` sequence is `[true, false]` on the path where the ending wins. With
+the `setTimeout` arm taken out of the `Promise.race`, the new claim goes red on *the pane never
+came back*, which is the state with no verb out the bound exists to prevent.
+
+**Retires when:** nothing retires it. The generalisation is N307's, said about a browser: when
+one check in a file derives its population and its neighbour lists one, the neighbour is a
+finding waiting for the next batch, and which of the two is which is visible in the file.
+
+## N314 — The flow's stranded session, and its re-entrant Start
+
+**Date:** 2026-08-21. **Subject:** `crates/web/assets/calibrate-flow.js`'s `watching`, `run`,
+`paint` and the new `flow.inFlight`. **Class:** a state a failure strands with no verb out
+(AGENTS rule 7, docs/11 **H2**) and N279's re-entrancy class in the buttons its repair did not
+reach.
+
+Two findings in one module, repaired together because the second is what the first's sentence
+sent the operator into.
+
+**A camera switch left the sentence behind.** `watching()` drops every other trace of the session
+— the id, the control under review, the document, the grid, the pane — and left `#flow-status`
+standing. Measured in the pinned Chromium: after a switch away and back, the line still read
+`session 01a0235f-e70e-7572-8ceb-2087c37dbd33 started for strand-probe-2` over a `#flow` whose
+`data-session` was `""` and whose four verbs were all disabled. An operator is told a session is
+open, offered no verb that touches it, and given nothing that says why. It is note **N279**'s
+class one element along — a status line whose words and whose state were written by two different
+statements — and the repair is that the one function whose whole job is dropping the session
+drops its sentence too, colour included: a refusal left in red under a camera it is not about is
+the same wrong statement and louder.
+
+**What the operator does next is the second finding.** The only verb the flow offers with no
+session is Start, and Start answers `session_conflict: … is still open for this camera and task
+(…); resume it, or finish it before starting another` — a D13 refusal, rendered faithfully, whose
+instruction names an action this surface does not have. **Adopting a listed session into
+`flow.session` is the owner's ruling and is not made here**: `#session-list` already produces a
+session id and `wch_calibrate_status` by id is already what the flow believes about a session, so
+resuming costs no new verb and no second state machine — and D20's stated non-goals are an agent
+surface, a session editor and a second state machine, none of which it is. The stale line is
+repaired; the way back is recorded as the owner's.
+
+**Start was re-entrant, and its own fence could not see it.** `paint()` disabled Start on
+`!hasCamera || flow.sweeping`, so an ordinary double-click ran a second `start()`: two
+`wch_calibrate_start` on the wire from one gesture, 28 unarranged runs out of 28 in the review's
+reproduction, the daemon refusing the loser, and the page painting that refusal in the failure
+colour **about the session it had just successfully created and was holding** — `#flow`'s
+`data-session` carrying the very id the red line said was in the way. The success sentence was
+lost. `start`'s `read !== reads` fence covers only the success path, because a refusal throws out
+of `rpc.call` in front of it; the louder half is exactly the half the fence does not reach. Plan,
+Apply and Restore had the same shape and were benign only because the daemon happens to be
+idempotent about them, which is not a property this page is entitled to assume.
+
+**The fence moved to `run()`, which is the one home it has.** N279 landed the guard inside
+`sweep()`, on the one verb whose second click had a visible ending; `run` is the function every
+button and every sample click already goes through, so a count incremented there and painted
+before the first await covers all five verbs and any verb added later. It is a **count** rather
+than a flag because a sample click and a verb can be live at once and a flag cleared by whichever
+finished first would re-enable a button whose call is still out. `flow.sweeping` stays, and now
+means only what `data-sweeping` publishes to the stylesheet — the preview slot has been lent to a
+sweep — which is a different question from whether a verb is on the wire.
+
+**A landed claim's red-on-inverse moved with it, and is named where it is asserted.** `a
+double-click on Sweep next is one sweep, and the page says so once` said it went red with
+`sweep()`'s two lines removed; it now goes red with `run()`'s two, and both that claim and its
+new twin `a double-click on Start is one session, and the page says so once` were driven red on
+the same deletion — 2 `sweeping brightness in 3 step(s)…` sentences, and
+`wire.answered("wch_calibrate_start") === 2`.
+
+**One adjacent gap, found while auditing this repair and recorded rather than repaired.** `run`'s
+`catch` paints a step's refusal with no `read !== reads` fence in front of it, and the gap is
+reachable: `sweep()`'s inner `finally` awaits `handBackPane`, which is up to
+`SWEEP_ENDING_WAIT_MS` after the refusal was thrown, so a camera switch can land between the
+throw and the paint — and the refusal then lands on a line `watching()` has just cleared. It was
+reachable before this batch too and painted over the *stale* sentence instead of over an empty
+one, so the repair above neither opens nor widens it. It is not closed here because `run` is the
+one door every rendered refusal comes through, including the ones two landed claims assert the
+page must show (`illegal_transition` at an out-of-order click, and the `busy` that must stay
+retryable, note **N285**), and a fence added there is a behaviour change those claims are the
+wrong instrument for. The owed check is a held `wch_calibrate_sweep` refusal released after a
+camera switch, which is `a refusal about a session nobody is looking at is not painted in red
+over a current line` with `refresh`'s door swapped for `run`'s.
+
+**Retires when:** nothing retires it. What generalises is that a guard landed in the function
+where the defect was found is a guard the next sibling does not get: the question to ask of any
+such repair is which function every one of those gestures already passes through, and whether the
+guard belongs there instead.
+
+## N315 — A call is a call whatever the file spells it, and both facade lists were derived from one spelling of one
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/facade-is-the-composition.sh` — the
+`encapsulates` derivation and the unreached-export note. **Class:** a ban that names one spelling
+rather than the class (N249), landing in a derived population, so the population shrinks where it
+should fail (N271).
+
+This predicate's whole commission is that the executor may not assemble the engine itself for
+anything the facade already composes. What the executor may not name is therefore derived from
+what the facade *does* name, and until this repair that derivation was the regex
+`crate::[a-z_]*::[a-z_]*\(` over `impl Facade`'s bodies: the set of modules the facade calls into
+**in a fully-qualified call**, which is not the set it composes. `crate::resolve::list(…)`,
+`resolve::list(…)` after `use crate::resolve;`, and `list(…)` after `use crate::resolve::list;`
+are one composition move spelled three ways, and only the first was read.
+
+**Measured, in a copy of the tree at `5496c02`, in both directions.** Adding `use crate::resolve;`
+beside the facade's existing `use crate::photo::{Destination, Photograph};` and dropping two
+`crate::` prefixes took the run from `checked 7 engine modules those verbs compose` to `checked
+6`, exit 0, no sentence named. With that facade in place, replacing the executor's
+`fn list(&mut self) { self.facade.list() }` with `engine::resolve::list(self.facade.backend())` —
+a second assembly of the engine in the composition root, the exact defect the header describes —
+passed: `PASS facade-is-the-composition — 104 items examined, 0 named skip(s)`, item-for-item the
+count of the unseeded tree. Restoring the facade and keeping the seeded bypass goes red on claim
+5's sentence, so the only thing between the shipped tree and a green bypass was which of two
+equivalent import spellings the facade happened to use — and the facade already wrote the
+invisible spelling three times.
+
+This is N271's shrink-rather-than-fail shape, in the file N271 was written next door to. That note
+built `scripts/gates/rust-imports.awk` as the one home for reading a Rust import, converted this
+predicate's *executor* half to it, and closed the sibling predicate's import branch with the words
+"that is the branch the grouped import needed and the one `gate_require_nonzero` cannot be" — and
+left this predicate's *facade* half reading calls alone.
+
+**The repair reads the facade's own imports through the same one home** and resolves the body's
+calls through the local names they bind, `as` renames included; the bindings arrive before the
+walk because the body lines are held and walked in `END`, so an import below a method still
+decides how that method's calls read. The two shapes the reader cannot reduce to a module — a
+glob of this crate, and an import naming `crate::` that yields no module — are counted refusals
+rather than a smaller number, which is the branch `gate_require_nonzero` cannot be.
+
+**The other half of the same class, in the same file.** The note listing facade exports the CLI
+never reaches matched `facade.<verb>(` and nothing else, so `new` — the composition root's one
+construction of the facade, `crates/cli/src/main.rs:84`, `Facade::new(backend_for(cli)?)` — was
+structurally permanent in that list and always would have been. The header sentence argued the
+allowance by naming its members, "`watch`, `open_id` and `backend` exist for embedders", and
+`open_id` is reached at `crates/cli/src/main.rs:382`: the prose and the computed list were wrong
+by a name in each direction, about the one thing the note exists for a reader to trust. Both call
+forms count now, the true unreached set is `{backend, watch}`, and the hand-written list is gone
+from the header — a derived list with a second hand-written home beside it is what this
+predicate's own claim 4 exists to keep collapsed (N153, N269).
+
+**Driven:** `fail_case_a_bypass_is_red_when_the_facade_composes_through_an_unqualified_call` seeds
+both halves of the measurement above and is red on the bypass sentence; the glob, the unreadable
+import and the unterminated import each have their own arm; and
+`pass_case_the_unreached_note_counts_both_spellings_of_a_call` drives the note's *population* in
+both directions — `new` must not be listed, and renaming the construction to `Facade::built(` must
+put it back — because the note itself can never fail and its population is the whole of what it
+buys.
+
+**Retires when:** nothing retires it. What generalises: when a predicate derives a population from
+source text, ask which *other spellings of the same fact* the language allows, and read the file's
+imports before believing a matcher over its bodies.
+
+## N316 — Three spellings of a reachable public item were enumerated, and the fourth was a method on an impl block
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/facade-stability-table-sync.sh`'s claim 4.
+**Class:** a ban that names spellings instead of the class (N249, rubric A17) — the class N271's
+own repair stated and then enumerated.
+
+Claim 4 holds that the facade's public surface never forces an embedder to name a module D18's
+stability table puts in the **No** column. N271 widened it after finding it walked only the
+`pub fn`s inside `impl Facade {`, so a module-scope `pub fn`, `pub type` or `pub struct` field
+naming a forbidden module was invisible — and widened it by listing item keywords
+(`fn|type|struct|enum|union|trait|const|static`) while still entering only the exact line
+`impl Facade {`. Every other `impl … {` fell through to the module-scope walk, which matches
+nothing at an impl header and therefore dropped every line inside it.
+
+**Measured on a copy at `5496c02`.** A free `pub fn lens_gap() -> Option<crate::preview::Gap>` at
+module scope goes red, naming its sentence, with the surface population rising 3 → 4. The
+identical leak written as `pub fn gap(&self) -> Option<crate::preview::Gap>` on an inherent impl
+of a module-scope `pub struct` passed: `PASS facade-stability-table-sync — 106 items examined`,
+byte-identical to the unseeded tree's summary, which is N269's and N271's own standard of proof.
+`unreachable_pub` is a workspace lint and `facade` is a `pub mod`, so `PreviewLens::gap` is
+genuinely API — a facade export handing an embedder a **No**-column type with both facade gates
+green.
+
+**The repair is the rule rather than a fourth keyword.** Every `impl` block is entered; an
+associated item is read when it is written `pub`; and in a **trait** impl every associated item is
+read whether or not it is, because a trait impl makes its items as public as the trait and there
+is no `pub` there to read. The population is now every associated signature the language makes
+reachable, so a `pub const` or a `pub type` on an impl — the fifth and sixth spellings — cannot
+arrive under it unseen.
+
+**Driven:** the inherent-impl arm and a trait-impl arm (`type Item = crate::preview::Gap;`) are
+red on claim 4's sentence, and
+`pass_case_a_private_helper_on_an_inherent_impl_is_not_the_surface` is the false branch that keeps
+them honest: a method *not* written `pub` on an inherent impl is reachable by nobody outside the
+crate, and a walk that read every line inside every impl would fail there — on the encapsulation
+half of the file, which is `facade-is-the-composition.sh`'s subject and not this one's.
+
+**Retires when:** nothing retires it. The generalisation is N249's, sharpened: when a repair for
+"the ban named one spelling" answers with a list of spellings, it has reproduced the defect at a
+larger size. Ask what the *language* makes reachable and read that.
+
+## N317 — The house precedent for the module-reach ban was the last reader still carrying the rule it disproved
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/avi-reparse-is-independent.sh`, claims 2 and 3.
+**Class:** a second home for a fact one home already reads (design §2.10), surviving in the file
+that was cited as the precedent for collapsing it.
+
+The muxer and the re-parser under `crates/imaging/src/avi/` are one byte layout derived twice on
+purpose, so product code in either may not name the other. That ban matched
+`(::|[{,][[:space:]]*)<sibling>\b|\b<sibling>::` over raw lines. N269 named this predicate as "the
+house precedent this missed" when the facade gate's own matcher was found blind to a grouped
+import; N271 then measured, built `scripts/gates/rust-imports.awk` as the one home, converted the
+two facade predicates, and closed with "when a second predicate needs a fact a first one already
+reads, the fix is one reader in `lib.sh` or beside it, never a second matcher that looks right."
+The predicate the repair had cited as its model was never asked the question.
+
+**Measured on a copy at `5496c02`, with this repository's own `rustfmt` settings and ordinary
+identifier lengths.** Seeding `write.rs`'s import list with `read` and letting `rustfmt` fill it
+gives
+
+    use super::{
+        AviParams, CapReached, FrameOutcome, IntervalSource, RecordingCaps, RecordingSummaryFields,
+        read,
+    };
+
+and the gate answers `PASS avi-reparse-is-independent — 14 items examined, 0 named skip(s)`, exit
+0, with the `ok`/`note`/`PASS` lines diffing empty against the unseeded run. The hole is not
+"grouped imports" — a group on one line is caught, and so is the common fill that leaves `, read`
+mid-line. It is precisely the sibling stem landing **first on a continuation line**, which is what
+`grep` being line-based costs, and which `rustfmt` produces whenever the fill breaks there.
+
+**The repair points the walk at the one home.** Every statement is joined across the lines
+`rustfmt` broke it over and flattened before the stem is looked for, so a group, a nest, an `as`
+rename, a restricted visibility and an `extern crate` are the paths they carry; the matcher is now
+`::<sibling>\b|\b<sibling>::` — a path position and nothing else — and the joiner's own bound, an
+import whose braces never close, is a counted refusal.
+
+**The two refusals the facade predicates carry are not transferred, and the reason is written down
+rather than assumed.** `use super::*;` brings the sibling in under its own name, so the call site
+still writes `read::recover_frames(…)` and the walk still sees it; `use super::read::*;` names the
+sibling in the import and is a violation on the spot. There is nothing here for a glob refusal to
+do, which is a different answer from the facade's and is why the question had to be asked of this
+directory rather than answered from next door.
+
+**Driven, and it removed a live false positive.** The wrapped-import arm is red on the sibling
+sentence; the unterminated-import arm is red on the joiner's; and
+`pass_case_an_ordinary_binding_named_after_a_module_is_not_a_module_reference` is green on
+`fn seam(a: usize, read: usize)`, which the old punctuation matcher read as a grouped import of
+the sibling and failed on — an argument named after a module was a finding this gate would have
+reported.
+
+**Two further spellings were driven after the fact, by the review of this repair, and both hold**
+(2026-08-21): `use super::read::*;` in `write.rs`, and a nested group `rustfmt` broke across lines
+(`use super::{\n    read::{\n        recover_frames,\n    },\n    AviParams as _Params,\n};`).
+Each answers `FAIL … names its sibling module ``read`` in product code` against the shipped
+predicate on a copy, and neither is seeded by an arm — so the repair closed the class rather than
+the two shapes its arms name. Recorded so the next reader does not re-measure it.
+
+**Retires when:** nothing retires it. What generalises: a note that names a file as the precedent
+for a rule has made a claim about that file, and the claim is worth running. Three module-reach
+bans existed in `scripts/gates/`; two shared the reader and the one held up as their model did
+not.
+
+## N318 — Two phase blocks opened without the pair every other block opens with, and nothing could go red on a row set
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/phase-criteria.tsv`'s `g7`, `g8` and `g9` blocks,
+and `scripts/gates/counted-selections.sh`. **Class:** a convention held by hand where a criterion
+was owed — the population of a phase's *rows* being the one population nothing walked.
+
+`awk -F'\t' '!/^#/&&NF>=4{print $1"\t"$3}' scripts/gates/phase-criteria.tsv | grep -E
+"run-all|selftest"` printed sixteen lines: `run-all.sh` and `selftest.sh` once each for g0 through
+g7, and nothing for g8 or g9. The pair is the *first* thing that lands in a block — `796babb`
+opened g7 with it — so its absence in the two blocks opened after was an omission rather than a
+deferral, and nothing in docs/13, docs/15, this table's header or these notes granted either phase
+a dispensation. `just gate-g8` ran four predicates and `just gate-g9` three.
+
+**Said precisely, because the loose version is false.** `just ci` runs `run-all.sh` and
+`selftest.sh` at every green boundary, so P8 and P9 did not develop against predicates nobody had
+proven able to fail. What they lacked was a *gate* that said so: the difference between a
+criterion and a habit, and the difference the phase-gate table exists to record. The cost is
+stated in the rows themselves — the pair takes each of those gates from seconds to about twenty
+minutes, which is g0 through g7's price for the same claim.
+
+**Three more populations were owed a row in the same walk.** P8c landed five `hw_gone_*` recipes
+and the second half of its own **Proves** bullet — "the hardware recipes exist, are recipe-named,
+and decline by name" — had no g8 criterion, where five earlier phases each bought exactly that
+with a `./scripts/smoke-hw.sh` row; the recipes could be renamed, misprefixed or drift out of that
+script's `prefix=hw_` selection with `just gate-g8` green. P8a, P8b and P9 each moved a committed
+generated artifact, and `schema-artifacts-current.sh` was a criterion of no v3 phase while
+`agent-guide-current.sh` was a criterion of no g8 — so a doc-comment edit in `webcam-handler-api`,
+`-schema` or `-cli-core` that moved the bundle or the guide left `just gate-g8` green while
+`just ci` was red, the two things AGENTS' "Done means" treats as one fact. And P7d's **Proves**
+bullet delegates a named claim to `cli-parity.sh` in as many words, which no g7 row named. The
+g8 and g9 rows now carry those reconcilers explicitly beside their suite row, as g2, g3, g4 and g6
+have always done: the phase that moved the bundle is the phase that owes the answer, and a
+criterion a reader can point at is what makes the debt visible.
+
+**A row also stated a count of the tree that was false.** `The row above selects nine tests` was
+written about a selection the tool lists ten names for, and it was false at `bcd2826`, the one
+commit that ever wrote the phrase — N158's class, in the file the batch immediately before this
+one swept for exactly it. The sentence's substantive claim, that not one of those tests links
+`webcam-handler-v4l2`, is true and carries no weight from the number, so the number is gone rather
+than corrected: the form `7f37bbf` chose wherever a figure had nothing to reconcile it.
+
+**The rule is a criterion now, not a convention.** `counted-selections.sh` reads the row set of
+every phase the table declares and goes red on a block that names neither `run-all.sh` nor
+`selftest.sh`, one sentence per half. The population is the phases the table declares rather than
+a list of phase names, so the eleventh phase is inside the rule the day it opens. Both halves are
+driven — one arm per sentence, each removing the row from **one** block, because a table with the
+pair gone everywhere would be red under a rule that only ever looked at the first — and
+`pass_case_a_phase_that_carries_the_pair_twice_is_still_a_phase_that_carries_it` is the green
+direction that keeps the rule about a phase's own rows.
+
+**Retires when:** nothing retires it. What generalises: a phase gate's row set is itself a
+population, and "every block carries X" was a sentence eight blocks happened to satisfy rather
+than a claim anything walked. When a convention has held eight times, that is the moment it is
+cheapest to make it a criterion — and the two blocks that broke it are the evidence that it does
+break.
+
+## N319 — Three counts survived the counts sweep, and one of them was measured against the wrong document
+
+**Date:** 2026-08-21. **Subject:** `crates/schema/src/limits.rs`'s `MAX_PHOTO_DECODE_BYTES` doc,
+`crates/imaging/src/compare.rs`'s `png_declaring`, and the D14 selector counts in
+`schema::selector`, `engine::resolve`, `daemon::server` and `cli_core`. **Class:** a prose count of
+code that nothing reconciles (N153, N158) — the residue of the sweep `7f37bbf` ran.
+
+`MAX_PHOTO_DECODE_BYTES`'s doc said "A **72**-byte PNG whose IHDR declares 200 000 x 200 000
+RGBA"; N268, written in the same commit, said 68. The committed `png_declaring(200_000, 200_000)`
+was extracted verbatim, compiled standalone and run: 68 bytes — signature 8, IHDR chunk 25, the
+empty-deflate IDAT chunk 23, IEND 12 — and the file it produces draws the `160000000000` refusal
+the doc's next clause names. The notes were right and the constant's doc was wrong by four bytes.
+Both sentences landed in `a71748a`; `7f37bbf`'s sweep of eleven stale counts reached
+`docs/`, `AGENTS.md`, `README.md` and four crates and did not reach that file. The figure is gone
+rather than corrected, in both the constant's doc and the fixture builder's, because the exact
+size is not what either sentence is about and nothing reconciles it: what makes the bound
+necessary is that the number reaching the allocator comes out of the *header* rather than out of
+how much the caller handed over, and that is what the sentence says now.
+
+**The other two are `SelectorScheme::ALL.len()` transcribed by hand.** N308 removed "the other
+four" from `xtask::guide`'s selector section three days earlier, citing N153 and N158, and landed
+an arm banning **any** cardinality word there — "because a walk that banned only 'four' would pass
+'the other five' on the day a sixth scheme landed". Five present-tense claims about what this
+build takes survived it, in Rust doc comments and test prose nothing generates from: `One camera,
+named in any of D14's five spellings` in `schema::selector` — a hundred and thirty lines above the
+`closed_vocabulary!` block that is the count's only authority — `in whichever of D14's five
+spellings it was written` and `The four spellings v3 adds` four lines apart in the same
+`engine::resolve` doc comment, `D1's ids and prefixes, D14's four other spellings` in
+`daemon::server`, and `the parser takes five spellings` in `cli_core`'s help test. None of them
+reaches a committed artifact — `CameraSelector`'s hand-written `json_schema` overrides its rustdoc
+and the bundle carries no count — so the reader is a maintainer, and the repair is to delete the
+numbers rather than to gate them: "named in any of D14's spellings" says the same thing and cannot
+go stale. Every remaining hit of the phrase in the tree is narrative about the defect N303 and
+N308 record, or about the hypothetical sixth scheme, and those are past-tense claims a sixth
+scheme does not falsify.
+
+**Retires when:** nothing retires it. What generalises is the sweep's own shape: a batch that
+repairs a count in the documents should ask which *crates* carry the same transcription, and a
+batch that lands a note and a doc comment about one fixture in the same commit has written the
+number twice.
+
+## N320 — The vocabulary had one home and one unguarded exit, and every reader printed it
+
+**Date:** 2026-08-21. **Subject:** `crates/schema/src/selector.rs`'s `SelectorScheme::example`.
+**Class:** one home per law, with the last exit from it unwatched.
+
+N303 gave D14's spellings one home: `SelectorScheme::ALL` generates the vocabulary sentence a
+refusal prints, the `<CAMERA>` help clap renders on sixteen verbs across both roots, the guide's
+selector table, the wire's `invalid_value` and `CameraSelector`'s JSON Schema description, so a
+sixth scheme joins every reader by existing. What the repair did not do is tie the *string* those
+readers render to the parser that has to accept it. `prefix()` is chained to `parse` through the
+hand-written `samples()` table — `every_prefixed_scheme_is_recognized_by_the_prefix_it_declares`
+and `every_spelling_parses_to_its_own_scheme` are the two links — and `example()` hung off the end
+of that chain attached to nothing.
+
+Measured, at workspace scope, before the repair. One arm of `example` rewritten from
+`"bus:<interface-path>"` to `"buspath:<interface-path>"`, `parse` left alone: 1688 tests passed,
+and the only red predicates were the two artifact-currency gates, green again after
+`just generate` committed the new spelling into `docs/agent-guide.md` and the OpenRPC document.
+The shipped binary then answered `info 'buspath:3-4:1.0'` with `no camera matches
+"buspath:3-4:1.0" — a camera selector is one of: cam:<id>; /dev/videoN; buspath:<interface-path>;
+…` at exit 13, while `bus:3-4:1.0` still resolved: the refusal that exists so an unattended caller
+learns the grammar taught back the spelling it had just refused, and eighteen places in the
+generated guide taught it too. N303's repair made a sixth scheme join every reader by existing; it
+also made a *wrong* spelling join every reader by existing.
+
+`the_spelling_this_build_teaches_is_the_spelling_this_build_parses` closes it by handing `parse`
+the scheme literal the example itself teaches, with a body from `samples()`: the parser judges the
+taught spelling rather than a second declared table. It is red on the seed above, naming
+`BusPath teaches readers to write buspath:<interface-path>, and buspath:3-4:1.2 is not a spelling
+this build parses at all`. **The residual is stated in the arm:** it guards the scheme literal,
+which is the half `parse` dispatches on, and not the body — three of the five bodies are
+metasyntactic, so a `usb:<vid>:<pid>` degraded to `usb:<vid>` still passes, and there is no string
+a parser can be handed to catch it.
+
+**Retires when:** nothing retires it. What generalises is the question: when a vocabulary is given
+one home, ask which of its *renderings* the parser has an opinion about, and chain each one to the
+function that has to accept what it teaches.
+
+## N321 — The decode budget refused through two doors and only one of them said so
+
+**Date:** 2026-08-21. **Subject:** `crates/imaging/src/compare.rs`'s `read` and `budget`.
+**Class:** one law, two refusal sentences — and a ceiling nothing could drive.
+
+N268 bounded the raster a photograph's header declares, and asserted the shape of the refusal in
+its own words: the message names the format **and** the budget, "so an unattended reader can tell
+a file that is too big from a machine that is out of memory". That holds for a *tall* file. It did
+not hold for a wide one. The ceiling `budget()` hands `PngDecoder::with_limits` becomes the `png`
+crate's own `Limits { bytes }`, which that crate spends on the intermediate buffers one output
+line needs — so a PNG whose **width** alone outruns the budget is refused while the header is
+still being read, before `oriented_luma` compares the extents, and the sentence a caller got was
+the dependency's: `png decode failed: Memory limit exceeded`. Measured through the shipped binary
+at HEAD: `photo diff` on a 68-byte PNG declaring 200000x200000 answered N268's sentence at exit
+26, and on a 68-byte PNG declaring 134217729x1 answered `Memory limit exceeded` at exit 26. Same
+class, same verb, same kind, two sentences, and the second is the one that reads like an
+exhausted host.
+
+**And nothing drove the ceiling.** Seeding `budget.max_alloc = None` left the whole workspace
+green — a survivor at workspace scope — because for any height of one or more the declared raster
+is at least the row, so `oriented_luma`'s check catches everything the constructor would have,
+one door later and (this is the sting) with the *better* sentence. The construction ceiling was
+therefore invisible from inside the program: removing it improved the message.
+
+The repair keeps both doors and gives them one voice. `refused_before_a_pixel` maps every
+`ImageError::Limits` out of the constructor into this build's own sentence — every limits error
+from that call is `max_alloc`, because `budget()` leaves both of `image`'s dimension ceilings
+unset on purpose — and `past_the_budget()` renders the clause naming the number once, for both.
+Two arms drive the row bound from either side, with the width derived from
+`MAX_PHOTO_DECODE_BYTES` rather than transcribed:
+`a_photograph_whose_header_alone_outruns_the_budget_is_refused_in_this_builds_own_words` names the
+header clause, which is what makes the ceiling drivable — under `max_alloc = None` it goes red
+with `the row past the budget was not refused while the header was being read` — and
+`a_photograph_whose_rows_fit_the_budget_is_refused_for_its_raster_and_not_for_its_rows` puts a row
+of exactly the budget through the constructor and takes the extents sentence, at a height of two
+so the fixture is refused before half a gigabyte is allocated to prove that a row fits.
+
+**Retires when:** the `png` crate stops spending `Limits { bytes }` on header-time buffers, at
+which point the first door has nothing to refuse and the arm above goes red rather than silent.
+
+## N322 — The bound named one door and the file went through an earlier one
+
+**Date:** 2026-08-21. **Subject:** `crates/cli-core/src/lib.rs`'s `read_photograph` and
+`read_profile`; `schema::limits::MAX_PHOTO_DECODE_BYTES`. **Class:** bounded everything, at the
+wrong door — N268's forbidden failure shape, still reachable.
+
+`MAX_PHOTO_DECODE_BYTES`' doc said it is "read by `imaging::compare::read`, which is the one door
+a stored photograph enters this build through", and that sentence is what made the gap invisible
+to review: `photo diff` reads the file first. `std::fs::read` sizes its buffer from the length of
+the path a caller named, so the number reaching the allocator came off a command line exactly as
+the extents in a header do, one call before any budget was consulted.
+
+Measured through the shipped binary at HEAD 5496c02, on a 3 GiB file of zeros:
+
+* under `MemoryMax=8G`, `--json photo diff` exits 26 with the correct `Failure` document ("not a
+  photograph this build writes … the first bytes are 00 00 00 00") — after a maximum resident set
+  of 3 152 780 kB. Six times the decode budget, allocated to answer a question that needed four
+  bytes.
+* under `MemoryMax=1G`, the same command: **exit 137, zero bytes on standard output, zero bytes on
+  standard error.** That is N268's own sentence verbatim — no `Failure` document, no exit code
+  from the D13 registry, nothing on standard output at all — reached again through the other half
+  of the same allocation.
+* `--json profile compare` on the same pair under the same ceiling answered identically, so it is
+  the class and not one verb (N249).
+
+**The precondition is a memory-constrained process and the finding should be read that way**: at
+the house's own 8 GiB ceiling a 3 GiB file answers correctly, and the empty-stdout kill needs a
+cap at or below the named file's size. That is not exotic for this tool's primary consumer — an
+agent harness in a container — and this build's own `MAX_RECORDING_BYTES` is 2 GiB, so an agent
+that typos its own `take.avi` into `photo diff` is inside the range. A file so large the
+*reservation* fails answers cleanly: `fs::read` uses `try_reserve`, and a 400 GiB sparse file
+gives `storage_io` / "out of memory" at exit 27.
+
+`read_named_file` is the one door now: `metadata`, then the refusal, then the read — so a file
+past the budget is declined having allocated nothing at all. The photograph half reuses
+`MAX_PHOTO_DECODE_BYTES`, and the reuse is derived rather than convenient: every format this build
+writes spends at most one file byte per raster byte, so a file past that number cannot be a
+photograph it wrote, whatever its header goes on to declare. The profile half gets
+`MAX_PROFILE_FILE_BYTES`, which is `RPC_MAX_RESPONSE_BYTES` — a profile is answered whole in one
+JSON-RPC response, so a larger document is one this tool could never have handed anybody, and the
+largest capture in `corpus/` is the vivid one at about 1.3 MB. The arms are
+`a_file_past_this_builds_budget_is_refused_naming_it_rather_than_read_whole` over both verbs, with
+sparse fixtures of `budget + 1` bytes (`set_len`, so proving that half a gigabyte is never
+allocated costs no disk either), and
+`a_file_inside_the_budget_is_not_refused_for_its_size_on_either_document_verb` reading the
+fixtures' own sizes off the filesystem rather than assuming them.
+
+**The residual is stated in the function's doc:** a file that *grows* past the budget between the
+`stat` and the read is read at its new size. That window is `std::fs::read`'s own, it ends in a
+`try_reserve` failure rather than an abort, and closing it would take a second mechanism whose
+failing branch nothing in this workspace could drive.
+
+**Retires when:** nothing retires it. What generalises is the question N268 did not ask: when a
+bound is put on a number a file supplies, ask which door the *bytes* came through, and whether the
+sentence claiming "the one door" has been checked against the call above it.
+
+**Amended 2026-08-21, the same day, by the review of this repair** (note **N329**). Two sentences
+above are narrower than they read. "It is the class and not one verb" was measured on the two
+verbs this note walked, and the class has four members: `restore` and the `--profile` flag take a
+path off a command line too, and both were still killed at exit 137 with nothing on either stream.
+And the residual paragraph is retired rather than standing — a bound read off `stat(2)` is not the
+readable length of a character device or a FIFO, `/dev/zero` reproduced the forbidden failure shape
+through `read_named_file` itself, and bounding the *read* closes the grow-between-`stat`-and-read
+window as a side effect. The reading is `schema::file::read_under_budget` now, which is a crate
+`webcam-handler-engine` can also reach.
+
+## N323 — D15's partition was closed on four structs and open on the fifth, which is the one a restore reads
+
+**Date:** 2026-08-21. **Subject:** `crates/schema/src/camera.rs`'s
+`CameraFingerprint::differing_fields`; `scripts/gates/profile-partition-is-closed.sh`.
+**Class:** a partition closed by destructuring everywhere but where it decides a refusal.
+
+`CameraInfo::differing_fields` opens `let CameraInfo { id: _, fingerprint, card, … } = self;`
+under a comment saying it is destructured "so that this function stops compiling the day
+`CameraInfo` grows a field" — and then delegates the identity half to a neighbour that read its
+five fields through `self.` and had neither the pattern nor a row in the gate. The gate's own
+header names the ambiguity — "`camera.rs` declares two called `differing_fields`" — and declared a
+row for one of them; the other could not be given one at all, because claim 3 fails a function
+carrying zero `let` patterns. So the predicate written because destructuring is invisible was
+green here for exactly the reason it exists.
+
+Measured on a `git archive` copy: `pub firmware: Option<String>` added to `CameraFingerprint` and
+given a value at the 24 struct-literal sites the compiler demanded. `cargo check --workspace
+--all-targets` exit 0 — `differing_fields` compiled untouched. `cargo nextest run --workspace`:
+1688 passed. `./scripts/gates/run-all.sh`: 43 predicates green, with
+`profile-partition-is-closed` printing `checked 4 partitions`. Two fingerprints identical but for
+`firmware` then answered `differing_fields = []`, `matches = true`,
+`describes_the_same_device = true`. That is not cosmetic: `engine::snapshot::restore` decides
+`Error::FingerprintMismatch` from this list and `engine::lifecycle::belongs_to` decides whose
+session a sweep belongs to from it, so AGENTS rule 8's mechanical half would have waved a snapshot
+onto a camera the new field says is a different device.
+
+The function destructures now and the fifth row is declared, with two arms:
+`fail_case_the_fingerprint_grows_a_field_its_comparator_never_sees` and
+`fail_case_the_fingerprints_destructuring_is_simplified_into_field_access`, each red on its own
+sentence. **One residual, unchanged and worth carrying:** the predicate scans `let <head> {`
+patterns whose head is the declared struct, so the nested `let DeviceNode { path: _, kind, … }`
+inside `CameraInfo::differing_fields` is closed by the compiler and by nothing else — a `..` added
+there is invisible to the one reader written because destructuring is invisible.
+
+**Retires when:** nothing retires it. What generalises is the shape of the miss: when a predicate
+declares a population by policy and its header names an ambiguity it stepped around, the thing it
+stepped around is where to look next.
+
+## N324 — The Yes column was not closed: a holdable module's own surface demanded two forbidden ones
+
+**Date:** 2026-08-21. **Subject:** `crates/engine/src/photo.rs`; D18's stability table in
+`crates/engine/src/facade.rs`. **Class:** a contract that answers one question two ways.
+
+D18's table puts `engine::photo` in the **Yes** column and `capture`, `preview` and `actor` in the
+**No** one, and the Yes row states the rule the whole column rests on: it names "every module this
+facade's own imports and signatures force on a caller, because a headline verb that cannot be
+called from inside this column would make the column a fiction". Two items on `photo`'s own public
+surface broke it. `pub fn take` answers a `Taken` whose `gap` was `crate::preview::Gap`, and
+`pub fn from_capture` demanded a `&crate::capture::Capture` — so an embedder holding the whole Yes
+column could not name the type of a field it was handed, and could not call one of the module's
+two constructors at all.
+
+The population was closed rather than sampled: the three crates the table classifies module by
+module are engine, imaging and testkit, 36 modules matching the predicate's own printed count, and
+every `use crate::` in every Yes module of all three is eight statements. Two Yes modules import
+No ones — `discover`, whose public `Discovery` carries only whole-crate-Yes schema types, and
+`photo`. `photo`'s `use crate::actor::OpenCamera` is deliberately not claimed: `OpenCamera` is a
+transparent alias for `&mut dyn Camera`, so a caller passes `camera.as_mut()` and never writes the
+No module's name.
+
+`from_capture` is `pub(crate)` — its one caller is `engine::calibrate`, which is inside the crate,
+and it is the pipeline the facade runs *around* an embedder's destination rather than a seam D18
+promoted. `Gap` is re-exported as `crate::photo::Gap`, which is the whole of the repair for that
+half: the value is nameable from inside the Yes column, the module that runs the stream stays
+outside it, and `preview` keeps the type it produces. Neither is a table edit — the compiler holds
+both from here.
+
+**Neither facade predicate could see any of it**, and that is what is still owed:
+`facade-stability-table-sync.sh`'s claim 4 walks `crates/engine/src/facade.rs` and nothing else,
+`facade-is-the-composition.sh` walks the executor and the facade, and nothing walks a Yes module.
+The sixth claim — for every module in a Yes row, every `crate::<module>` its imports and public
+signatures name must also be Yes — is commissioned in docs/15 Part 2 and not landed here.
+
+**Retires when:** that claim lands. Until it does, the Yes column is closed by two `pub`
+keywords and a re-export, and by nobody watching.
+
+**Retired 2026-08-21, the same day: the claim landed, and it went red on a third leak this note
+had ruled out** (note **N328**). `photo::take`'s first parameter is `crate::actor::OpenCamera`,
+and the argument above — that the alias is transparent, so a caller writes `camera.as_mut()` and
+never names the No module — is true about what a caller *types* and not about what the contract
+*says*: the rustdoc an embedder reads links a forbidden module from a promoted verb, and the row's
+Why cell claimed the rule had failed in one place. `OpenCamera` is re-exported as
+`crate::photo::OpenCamera` on `Gap`'s reasoning, and the Why cell now says three. The narrowing
+is worth keeping as a lesson rather than as a rule: a verifier's self-narrowing is a judgement
+about a surface, and the check written for the two survivors is what settled it.
+
+## N325 — A USB id is two spellings, and the one the primary consumer parses is the one it cannot write back
+
+**Date:** 2026-08-21. **Subject:** `schema::camera::UsbId`'s derived `Serialize` against
+`schema::selector::parse_usb`. **Class:** wire shape — recorded, not repaired; the owner's call
+under N109's three options.
+
+Measured through the shipped binary at HEAD, no mutation needed:
+
+    $ webcam-handler-cli --backend fake --profile corpus/profiles/chicony-rgb.json \
+        info 'usb:04f2:b83c' --json
+    … "usb_id": { "vendor": 1266, "product": 47164 } …
+    $ … info 'usb:1266:47164' --json
+    {"failed":true,"error":{"kind":"camera_unknown","requested":"usb:1266:47164"}}   exit 13
+
+Asked in hex, answered in decimal, in one exchange; feeding the document's own numbers back is
+refused. The human rendering of the same verb prints `usb_id  04f2:b83c`, byte-identical to the
+selector body, and so do the EXIF `ImageDescription` and the agent guide — so this is two
+spellings and not three: one string, reused everywhere a person reads, and one object of two
+integers everywhere a program does. `schemas/webcam-handler-openrpc.json` carries the
+contradiction in one file, declaring `params.camera` as a string spelled `usb:04f2:b83c` and
+`result.info.fingerprint.usb_id` as an object of two `uint16`.
+
+**Alone among D14's five schemes, `usb:` cannot be built from a listing entry by substituting a
+string.** `cam:` (`info.id`), `/dev` (`nodes[].path`), `bus:` (`fingerprint.bus_path`) and
+`serial:` (`fingerprint.serial`) are all directly usable strings in the same object. It bites both
+consumers AGENTS names: an agent that read `camera_ambiguous` for `usb:04f2:b83c` cannot
+reconstruct what it asked from the listing, and the usb-teleporter harness that compares `--json`
+answers across machines holds a `usb_id` this tool will not take back.
+
+**Not a re-litigation, and N109's own test passes:** nothing in docs/12, docs/15 or these notes
+records `{vendor, product}` as anybody's choice. It is serde's default for a two-`u16` struct,
+exactly as `[[77,74,80,71]]` was serde's default for `[u8; 4]`, and it became load-bearing only
+when D14 turned the hex string into a grammar this build accepts.
+
+**Why this is recorded rather than repaired.** Changing the shape means hand-writing
+`Serialize`/`Deserialize`/`JsonSchema` over the existing `Display`/`parse_hex16` pair the way
+`PixelFormat` was done, bumping `PROFILE_SCHEMA_VERSION`, regenerating both artifacts under
+`schemas/` — and rewriting five committed device profiles and one fixture, which are tool-captured
+documents this project holds immutable and replaces only by re-capture. That is an owner's
+decision about the wire and about the corpus, not a repair.
+
+What landed instead is the arm that makes the asymmetry a counted exception rather than a silence:
+`every_spelling_this_tool_answers_with_can_be_read_back_out_of_its_own_document` walks
+`SelectorScheme::ALL` over every camera the corpus replays, builds each spelling out of the
+serialized listing entry, and requires the one scheme that cannot be built to be in
+`NOT_IN_THE_DOCUMENT` with its reason. A sixth scheme is either read back or listed; and the day
+`usb_id` becomes a string the arm goes red on its own exception count, which is what makes this
+note the thing that gets updated rather than forgotten.
+
+**Retires when:** the owner rules. Either the shape changes and the exception goes, or "accept
+both" lands a reading half and the exception's reason changes, or this note is the answer.
+
+## N326 — The human record table showed none of D16's instrument, under a doc claiming both halves show the same facts
+
+**Date:** 2026-08-21. **Subject:** `crates/cli-core/src/render.rs`'s `record`. **Class:**
+doc-versus-code drift, on a population closed on the sibling surface and not on this one.
+
+`render::record`'s doc says the `--json` half is `RecordReport` verbatim and the human half is the
+table beside it, and that "the two show the **same** facts, which is why every row below is a
+field of the document". The second clause was true — every row was a field — and the first was
+false in the direction it is bolded in: `RecordReport::stats` reached the document alone.
+Measured on the attached Chicony, one verb, two runs. The human run printed a twelve-row table
+whose only delivery fact is `dropped 1`. The `--json` run of the same verb carried
+`gap_events: 1`, `sequence_resets: 0`, `clock_reversals: 0`, `wall_clock_skew_us: 35980` and an
+interval block reading `mean_us 60001, min_us 47990, max_us 180008, p50_us 51985, p99_us 180008,
+jitter_us 18462`. A 180 ms frame against a 60 ms mean is the stall D16 exists to surface —
+`gap_events`' own doc says one gap of sixty and sixty gaps of one are the same count and different
+failures — and the operator reading the table could not see it. Thirteen quantities were in the
+document and not on the table (`frames_dropped` *is* there as `dropped`, two readings of one
+accumulator that cannot disagree, and `intervals` is a container rather than a quantity).
+
+The sibling is the control: `render::photo` renders all nine `PhotoReport` fields, so the shape
+this house wants was on the surface next door. The consumer is not hypothetical either — D20 made
+the owner an interactive tuning-and-calibrating user, and the CLI's human half is what that reader
+gets.
+
+The rows landed rather than the retreat: D16 makes frame timing payload rather than metadata, and
+payload belongs in both renderings. `delivery_rows` adds the four counters, the eight interval
+fields and the skew, in the document's own order and under the document's own names, so a reader
+moves between table and document without a translation table. The absences say so —
+`not measured (fewer than two usable frames)` and `not measured (no caller clock)` — because those
+fields are `None` precisely so that reporting zeros would not claim a measurement nobody made, and
+a table printing `0 µs` would make the claim the document refused to.
+
+And the sentence is mechanical now. `the_human_table_shows_every_field_of_the_record_document`
+destructures `RecordReport`, `RecordingSummary`, `StreamStats` and `IntervalStats` — the mechanism
+D15's projection uses one crate over — over a fixture with a distinct number in every field, so a
+tenth field on the report or a ninth on the intervals stops the arm compiling until somebody has
+put it on the table or said there why it is not.
+`a_take_that_measured_no_intervals_says_so_rather_than_printing_zeros` is the other direction, and
+`a_capped_take_says_which_cap_ended_it_beside_the_table_rather_than_on_it` drives the one field of
+the document that is deliberately not a row, over `CapReached::ALL` and with the unconditional-note
+inverse beside it.
+
+**The reconciler's own first draft could not go red, and that is worth recording.** It asserted
+`table.contains(&gap_events.to_string())` — a bare `2` against a table already carrying `271`,
+`274` and `273` — and deleting the whole `gap runs` row from the renderer left it green, measured
+in a copy of the tree. A row is a field *and* a value, so the arm looks the row up by its field
+cell and compares the value cell exactly; the four rows that are computed rather than carried are
+asserted inside the row they are computed into, and the measured rate against
+`RecordingSummary::measured_interval_us` — the schema's own subtraction, which is the exception
+`record`'s doc names — rather than against this renderer run twice (N252).
+
+**Retires when:** nothing retires it. What generalises is the pairing: when one renderer's
+population has been closed by destructuring, its sibling is where to look for the same sentence
+holding nothing up.
+
+## N327 — An exclusion from the mutation floor named two mechanisms that reach neither of its unreached exports
+
+**Date:** 2026-08-21. **Subject:** `.cargo/mutants.toml`'s `crates/engine/src/facade.rs` entry.
+**Class:** a justification that stopped being true, in the file whose own law is that an exclusion
+is a decision with a date.
+
+The entry argued that "`cli-parity.sh` and `binary(facade_equivalence)` pin its answers byte for
+byte against the direct CLI, and `facade-is-the-composition.sh` holds which engine modules it may
+name in either direction, so a change to what it composes is red before a mutant could ask". Rule
+8's one-command check (N167) disposes of the first half: `facade-is-the-composition.sh` ends
+`checked 2 facade exports no file under crates/cli/src calls — backend watch`, and
+`crates/cli/tests/facade_equivalence.rs`'s two populations are seven read verbs — list, info,
+controls, controls --discover-pairs, get, snapshot, profile capture — so neither pin can move a
+byte when `Facade::backend` or `Facade::watch` changes. The claim spanned two batches: `962dff6`
+landed the finding that `Facade::watch` "was asserted nowhere though it is the verb §1.3's
+consumer holds" (N272) and put its assertions inside `facade.rs`'s own `#[cfg(test)]` module;
+`556e4d2` then excluded the file on an argument naming neither that module nor that verb.
+
+The disposition is right and the reason was wrong, so the reason is now what was measured.
+`cargo mutants --list -f crates/engine/src/facade.rs` gives **19** rows — the `-f` widens rather
+than narrows, since this exclusion is what keeps them out of an ordinary listing — and none of
+them is `Facade::new`, which `crates/cli/src/main.rs` does call. What holds `watch` is the file's
+own suite. What holds `backend` is the compiler: both listed mutants for that pair build a
+`Box<dyn …>` out of `Default::default()`, which was applied by hand and compiled here to E0277
+against `dyn CameraBackend` and E0790 against `dyn HotplugWatch`.
+
+**Nothing goes red when this happens**, by design: `mutation-scope-is-decided.sh` reads a marker's
+path and never its reason, because the reason cell is for the reader. That residual is recorded in
+docs/15's honest-limits list, and what found this one was a person running the one command the
+entry should have named.
+
+**Retires when:** the floor widens onto `facade.rs`, which is the cheaper and stronger answer at
+nineteen mutants with the file's unit suite already written — a mutation run is hours, so it is
+its own sub-milestone rather than this batch's.
+
+## N328 — A path into this crate is three prefixes, and both facade readers knew one of them
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/rust-imports.awk`,
+`scripts/gates/facade-is-the-composition.sh`, `scripts/gates/facade-stability-table-sync.sh`, and
+`crates/engine/src/photo.rs`. **Class:** a ban that named one spelling of the defect, landed in
+the same commit as the note saying a ban names the class (**N249**, rubric A17).
+
+Notes **N269**, **N271**, **N315** and **N316** are four rounds of the same argument on these two
+predicates: a reader that matches one spelling of a Rust import lets the very bypass it exists
+for through, with a counted summary byte-identical to the unseeded tree's. The repair that landed
+on 2026-08-21 taught `facade-is-the-composition.sh` to resolve a call through the local name an
+import binds, and then asked whether the statement said `crate::`. It does not, twice over.
+
+**Measured, on a `git ls-files` copy, against the shipped predicates with `WCH_GATE_ROOT`.**
+Replacing `use crate::resolve;` with `use super::resolve;` and dropping the `crate::` prefix at
+both call sites took the run from `checked 7 engine modules those verbs compose` to `checked 6`,
+exit 0, no sentence, `115 items examined` unchanged — and seeding
+`engine::resolve::list(self.facade.backend())` into `crates/cli/src/main.rs`, the exact bypass
+that population exists for, then gave `PASS facade-is-the-composition — 116 items examined`.
+`use crate::resolve::{self as r};` with `r::list(` and `r::camera(` gave the identical shrink and
+the identical pass: the flattener rewrites the group to `crate::resolve` and strips the `as`
+after rebuilding the path, so the rename map, which is keyed on the last path segment, learns
+`self` and never `resolve`. On the sibling predicate the same prefix reached an embedder from the
+headline surface: `use super::preview::Gap as PreviewGap;` beside a `pub fn last_gap(&self) ->
+Option<PreviewGap>` on `impl Facade`, and the same leak spelled inline as `->
+Option<super::preview::Gap>`, each gave `PASS facade-stability-table-sync — 106 items examined`,
+item-for-item the unseeded run. `super::` is not a shape invented for an arm —
+`crates/imaging/src/avi/write.rs` writes it.
+
+**The repair is in the one home, because the fact is one fact.** `wch_reroot` rewrites `super::`
+to `crate::` before anything matches a path — both files these predicates read are top-level
+modules of their crate, so the two spellings name the same module — and `self::` is deliberately
+left alone, because inside module `m` it names `crate::m::` and rewriting it would invent a
+module the crate does not declare. What answers for it instead is `wch_names_this_crate`, which
+both predicates' yields-no-module refusals now ask in place of looking for one prefix, so a
+statement the reader still cannot reduce is the counted refusal each header promises rather than
+a quieter number. `wch_self_renames` fills the rename map from the statement as written. Six new
+arms across the two case files, one per spelling, each driven by hand and each red on its own
+sentence; and each was run against a copy of the reader with the three helpers stubbed back to
+their pre-repair behaviour, where all six are green — which is the direction that matters.
+
+**And the Yes column had a third leak, found by the check written for the first two.** N324
+repaired `engine::photo`'s public surface where the review found it — `Gap` re-exported,
+`from_capture` made `pub(crate)` — and commissioned a sixth claim on
+`facade-stability-table-sync.sh` for the *next* such module. Landing that claim went red on the
+tree it was written into: `photo::take`, the module's headline verb, takes a
+`crate::actor::OpenCamera`, and `actor` is in the **No** row of the same table. The verifier of
+the original finding had self-narrowed that half out on the grounds that the alias is transparent,
+which is true and is why this is a should-fix rather than a blocker — but the rustdoc an embedder
+reads links a forbidden module from a promoted verb, and the row's own Why cell said the rule had
+failed "in one place". `OpenCamera` is re-exported as `crate::photo::OpenCamera` beside `Gap`, on
+`Gap`'s own reasoning, and the Why cell now says three.
+
+**Claim 6's shape, because it is not claim 4 pointed at more files.** Its population is
+`gate_pub_mods` filtered to the table's own **Yes** rows, over the crates the table classifies
+module by module — 24 modules today, and a module joins the walk on the day it joins the column.
+What it reads is every path a public signature spells outright plus every local name such a
+signature spells that a **private** import of this crate bound; a bare `pub use` binds nothing,
+because that re-export is precisely what makes the type nameable from inside the Yes column and
+is the repair `photo::Gap` already carries. `pub(crate) use` does bind — it is not reachable API,
+so it cannot be how an embedder names anything. Bodies are not read, for claim 4's reason:
+`engine::discover` calls into `crate::snapshot` and hands back nothing of it, which is
+encapsulation working.
+
+**One product line moved for the reader rather than for the compiler.** `crates/engine/src/settle.rs`
+carried a `#[cfg(test)] use std::time::Duration;` above its test module, which is two
+`#[cfg(test)]` markers, which is `gate_test_region_start` answering `-1` — so claim 6 refused the
+file rather than reading it. The import moved into `mod tests`, where it was already the only
+thing using it. The alternative was widening the shared classifier that eleven predicates read,
+which is a change to what every one of them calls product code, for one import.
+
+**Retires when:** somebody writes a Rust parser into this suite, which nothing yet needs. The
+residual is unchanged and stated in both headers: this reads source text, so a type re-exported
+under another name, or a signature assembled by a macro, is not read.
+
+## N329 — The bound was read off `stat(2)`, which is the readable length of a regular file and of nothing else
+
+**Date:** 2026-08-21. **Subject:** `crates/schema/src/file.rs` (new),
+`crates/cli-core/src/lib.rs`, `crates/engine/src/profile.rs`, `crates/schema/src/limits.rs`.
+**Class:** a ban that named one door and then one spelling of the file, on the path the `--json`
+ruling (**N127**, **N128**) is about.
+
+Note **N322** bounded `photo diff` and `profile compare` at the file door and wrote the finding
+down as a class — "`profile compare` answered the same way, so it is the class and not one verb".
+Two other verbs take a path off a command line and hand it straight to `std::fs::read`. Measured
+through the shipped binary against a 3 GiB sparse file, each run under `systemd-run --user
+--scope -p MemoryMax=1G -p MemorySwapMax=0`: `--json photo diff BIG BIG` answered the new
+`Failure` document at exit 27, while `--json --backend fake --profile corpus/profiles/chicony-rgb.json
+restore cam:integrated BIG` and `--json --backend fake --profile BIG list` were both **killed at
+exit 137 with zero bytes on standard output and zero on standard error**. That is verbatim the
+shape the `--json` ruling forbids, reached through two doors the repair walked past —
+`cli_core`'s `read_snapshot` and `engine::profile::read`, the second of which is also the
+daemon's own `--profile`.
+
+**And the bound that did land reproduced on the class it named.** `stat -c '%s %F' /dev/zero`
+answers `0 character special file`, so a budget consulted through `metadata` passes at zero and
+the `std::fs::read` behind it never ends: `--json photo diff /dev/zero /dev/zero` under a 2 GiB
+ceiling was killed at exit 137 with nothing on either stream, as was `--json profile compare
+/dev/zero /dev/zero` — through the very function written to prevent it.
+
+**One home, in the crate both sides can reach.** `crates/schema/src/file.rs`'s
+`read_under_budget` is the door now, and the alternative was two implementations of one law:
+`webcam-handler-cli-core` links no engine and `webcam-handler-engine` cannot call `cli_core`, so
+the shared crate is the only place a single reader can live. It keeps the `stat(2)` fast path —
+an oversized *regular* file is still refused having allocated nothing, and that is the refusal
+that can say how many bytes there are — and bounds the read itself at one byte past the budget, so
+a character device, a FIFO, a `/proc` entry and a file that grows between the two calls all answer
+on the same sentence. The doc comment that declined to close the grow-between-`stat`-and-read
+window is gone with the window. `MAX_SNAPSHOT_FILE_BYTES` is derived from
+`RPC_MAX_RESPONSE_BYTES` the way `MAX_PROFILE_FILE_BYTES` is, and is deliberately the same number:
+a profile carries a snapshot inside it, so a snapshot bound above the profile bound could not
+bind and one below it would refuse a document this build has already accepted.
+
+**All seven doors re-measured after the repair**, each answering a `Failure` document at exit 27:
+`photo diff`, `profile compare`, `restore` and `--profile` against the 3 GiB file, and the same
+four against `/dev/zero`. The arms are four in `schema::file` — at the budget, one byte past it,
+`/dev/zero`, and a missing path carrying `ENOENT`, which is what makes the other three's
+`errno: None` mean something (AGENTS rule 7) — plus `restore` walked by `cli_core`'s existing
+both-sides pair and two new arms on `engine::profile::read`, which is the door no crate above it
+can reach.
+
+**How the `/dev/zero` arm goes red is worth knowing before it does.** Narrow the bound from
+`budget + 1` to `budget` and it fails in milliseconds. Delete the bound and there is nothing left
+to end the read: the arm stops finishing rather than failing, and what turns that into a named
+failure is the three-minute deadline `.config/nextest.toml` gives every test — which is what that
+deadline is for.
+
+**Retires when:** nothing. The residual is that a budget is still a number somebody chose;
+`MAX_PHOTO_DECODE_BYTES` is `image`'s own default and the other two are derived from the wire's.
+
+## N330 — The one home for "the seed did not apply" grew a second copy in a case file
+
+**Date:** 2026-08-21. **Subject:** `scripts/gates/cases/counted-selections.cases.sh`'s
+`_drop_command_row`. **Class:** a second home for a law whose whole value is that one arm's
+silence cannot read as a pass (**N186**).
+
+`gate_seed_died` prints the sentence on **stderr** and appends it to `gate_seed_report`, and the
+two halves answer different readers: the file is what `selftest.sh` reads, and the terminal is
+what a person driving one arm by hand reads — which is the ordinary move while a gate is being
+written. `_drop_command_row` appended to the report directly and printed nothing, so a dead seed
+made a `fail_case_` return 0 with an empty console: a skip that reads as a pass at exactly the
+moment somebody is deciding whether their new arm works. `selftest.sh` would still have caught
+it, which is why this is a note and not a defect in the arms; the three arms it feeds were driven
+by hand and all three behave.
+
+It was the only file under `scripts/gates/cases/` that named `gate_seed_report` at all, which is
+the check worth keeping: `grep -rn gate_seed_report scripts/gates/cases/` now returns one line,
+and that line is this note's own citation.
+
+**Retires when:** nothing.
+
+## N331 — The doc-comment splice, third occurrence, in the file the second one was in
+
+**Date:** 2026-08-21. **Subject:** `crates/cli-core/src/render.rs`, and
+`scripts/gates/doc-comments-open-with-a-summary.sh`'s honest-limits list. **Class:** an item
+added between an existing `///` block and the item that block documented.
+
+`delivery_rows`' new doc block was written directly under `ended_text`'s with no blank line
+between them, so the two merged: `delivery_rows` rendered summarised as *"Why a recording
+stopped, as a phrase."*, and `fn ended_text` was left carrying no `///` at all. `git show
+HEAD:crates/cli-core/src/render.rs` has the two paragraphs immediately above `ended_text`, which
+is where they are again.
+
+This is B8's `stream_for_container` and B9's `record_request` for the third time, and the gate
+written for the class cannot see this variant — the destroyed half keeps no block, so there is
+nothing for it to read. Note **N222** measured the two rules that would have caught it and both
+cost more than they buy here: requiring every item to carry a doc comment lights up 272 items in
+this tree, and reading a paragraph-final sentence on its own line as a spliced summary matches 12
+places of which 11 are ordinary prose. Nothing in those two measurements has changed, so the
+answer has not: review is what finds this shape, and the whole Rust diff was walked for it
+(`git diff -U1 -- '*.rs'`, added `///` lines immediately following unchanged ones) with this the
+only true instance.
+
+The one side the tree cannot see is a *diff*-scoped rule — an added item placed between an
+existing block and the item it documented — which would be cheap in a pre-commit reader and is
+not a predicate over a tree, because over a tree the shape is indistinguishable from ordinary
+prose. Recorded rather than built: this workspace's gates read the tree, and a rule that only
+exists in a hook is one a fresh checkout does not have.
+
+**Retires when:** somebody builds that pre-commit reader, or a fourth occurrence prices it.
+
+## N332 — An exact count of asynchronously arriving frames, asserted at an unfenced instant
+
+**Date:** 2026-08-21. **Subject:** `crates/daemon/tests/browser/client.spec.mjs`, *the pane comes
+back when the sweep's ending does not, on the bound the page declares*. **Class:** a claim whose
+instrument is a race, in a rung whose config states that it will not retry.
+
+Five workspace runs under `systemd-run --user --scope -p MemoryMax=22G -p MemorySwapMax=0 cargo
+nextest run --locked --offline --workspace --no-tests=fail` gave three at `1697 passed` and two at
+`1696 passed, 1 failed`, on two different claims. One of them was this one, at
+`expect(wire.held()).toBe(1)`: *Expected: 1 / Received: 2*. The rung passed four for four
+standalone, which is why it only shows up where `just ci` runs it — inside the contended
+workspace run.
+
+`wire.held` is an append-only array of every frame matching the predicate the test installed, and
+that predicate matches **both** terminal spellings (`sweep_finished` and `sweep_interrupted`). The
+sweep is still running on the daemon while the two lines execute, and nothing fences a second
+matching frame out of the gap between `await expect(view).toBeHidden(…)` and the line after it.
+An exact count of frames that arrive asynchronously, taken at an instant nothing fences, cannot be
+right whatever the number is.
+
+What the claim is about is that the pane came back **while its ending was still held**, which is a
+fact about there being an unheld-back ending at all — so both the poll and the assertion after it
+now read `toBeGreaterThanOrEqual(1)`. The claim's own red-on-inverse is untouched and is stated in
+its comment: take the `setTimeout` arm out of `handBackPane`'s `Promise.race` and the pane never
+comes back, which is the line above.
+
+**Nine workspace runs after the repair, all green** at `1704 tests run: 1704 passed, 39 skipped`,
+under the same command and the same ceiling. Nine clean runs is not proof about a flake whose
+observed rate was two in five, and it is not offered as proof — it is the measurement the next
+session starts from, beside the structural argument above, which is what actually settles this
+half.
+
+**The other failure is not attributed and does not belong to this note.** Run 3 failed *a sweep in
+another session is a line in the log beside, never a picture in this pane* at
+`crates/daemon/tests/browser/client.spec.mjs`'s `#sweep-progress` poll, with the sweep refused —
+`brightness: stopped after 0/3 — busy: /dev/video0 is busy: this process is already streaming it`
+— after 42 polls over 20 s. That is a contention between the page's preview and the sweep it
+started, inside one daemon, and whether it predates this batch was not established: doing so takes
+five to ten workspace runs at `5496c02` beside five to ten here, which is a build this session did
+not have. It is recorded here so the next session starts from the measurement rather than from
+the symptom.
+
+**Retires when:** the second failure is attributed, at which point it gets its own entry.
+
+## N333 — The instrument stopped asserting the half the title and the design quotation still claimed
+
+**Date:** 2026-08-21. **Subject:** `crates/daemon/tests/browser/client.spec.mjs`'s D20 layout
+claim and its row in `crates/daemon/tests/browser/claims.json`. **Class:** a title stronger than
+the body under it, which is the shape a later reader trusts and is wrong about.
+
+The claim's instrument was `#column .control input, #column .control select`, and the repair that
+landed on 2026-08-21 was right about why that was wrong: `vivid` carries a run of ten controls the
+device flags `HAS_PAYLOAD`, three of which used to carry a number or text field anyway because the
+panel chose its widget from `type.kind` and never from the flag (note **N312**), so the assertion
+was reading a column position as "adjustable" on the strength of widgets every write to which came
+back `device_io … (errno 22)`. The replacement counts `#column .control` — one card per control —
+and that is a defensible claim. What did not move was the test's title, *the preview and the
+control being **adjusted** are visible together at every scroll position*, or its first paragraph's
+quotation of D20 in the same words. After the repair nothing held the "being adjusted" half at any
+scroll position, and the two strongest sentences a reader meets both said otherwise.
+
+**Measured before deciding, rather than reasoned about.** `#column .control:has(input, select)`
+was counted beside the card count at all nine sampled scroll positions of a real rung run, at the
+pinned 1280x720 viewport over the 77-control profile: **3, 3, 2, 2, 5, 5, 6, 0, 2**. The zero is
+the compound run, which is taller than a 720 px viewport. So the strong instrument would go red on
+a page that satisfies D20 perfectly well, and restoring it was not available: the title and the
+quotation are what had to move.
+
+They did. The test is *the preview stays put and a control card is whole on screen at every scroll
+position*, its paragraph says which half of D20's sentence it holds, the measurement above is
+written where the next reader will meet it, and `claims.json`'s *what* cell records that the
+adjustability half is D20's and is asserted nowhere at a scroll position, because the fixture says
+it is not a true sentence. The rung re-ran green at 44 claims and 461 assertions, which is also
+what reconciles the retitle against the manifest.
+
+**Retires when:** `controls.js` grows a writable widget for a compound payload, which PF:17 and
+note **N310** say it should not.
+
+## N334 — A count of this batch's own delta, measured from the diff instead of from the tree
+
+**Date:** 2026-08-21. **Subject:** `docs/15-claude-fable-automated-quality-gates-v3.md:183`.
+**Class:** a prose count of the tree that nothing reconciles (**N153**, **N158**), one paragraph
+away from the batch's own claim to have avoided it.
+
+The row said the phase-block delta landed "eleven criteria rows". Measured from the tree:
+`git show HEAD:scripts/gates/phase-criteria.tsv` against the working copy gives g7 24 → 25, g8
+17 → 22 and g9 9 → 12, which is **nine**. Eleven is the number of `+` lines in `git diff
+scripts/gates/phase-criteria.tsv`, two of which replace a `-` line and are rewordings of the
+`g8 rung-vivid.sh` and `g7 facade-is-the-composition.sh` rows rather than new rows. The row's own
+prose already enumerates exactly nine. docs/13's figures paragraph says 25/22/12 and is right,
+so the same working tree stated one fact two ways.
+
+Corrected to nine. The enumeration beside it is what a reader should trust — it cannot go stale
+the way a bare numeral can — and the standing open question about a reconciler for these counts is
+unchanged by this.
+
+**Retires when:** something reconciles the two documents' figures against the table, which is the
+open question and not this batch.

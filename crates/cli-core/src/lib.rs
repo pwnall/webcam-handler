@@ -2040,7 +2040,8 @@ fn compare_profiles(a: &Utf8Path, b: &Utf8Path, as_json: bool, out: &mut Output)
 ///
 /// # Errors
 ///
-/// [`Error::StorageIo`] naming the path, for a file that cannot be read. [`Error::DeviceIo`]
+/// [`Error::StorageIo`] naming the path, for a file that cannot be read or that is past
+/// [`schema::limits::MAX_PHOTO_DECODE_BYTES`]. [`Error::DeviceIo`]
 /// from `imaging::compare::read` for bytes in no format this build writes and for bytes their
 /// own decoder refused, carried verbatim from the crate that owns the format vocabulary: the
 /// message names every format that *would* have read and the first bytes that were found
@@ -2060,12 +2061,25 @@ fn compare_photographs(a: &Utf8Path, b: &Utf8Path, as_json: bool, out: &mut Outp
 /// carries the path and it has two callers a line apart — the same argument
 /// [`read_profile`]'s first four lines make, and the reason a caller meets one spelling of
 /// "that file is not there" whichever side of the comparison it was on.
+///
+/// Bounded at [`schema::limits::MAX_PHOTO_DECODE_BYTES`], which is the same number the
+/// decoder's own door reads and the reason that door was not the first one: every format this
+/// build writes spends at most one file byte per raster byte (note **N322**).
 fn read_photograph(path: &Utf8Path) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|error| Error::StorageIo {
-        path: path.to_owned(),
-        errno: error.raw_os_error(),
-        message: error.to_string(),
-    })
+    read_named_file(path, schema::limits::MAX_PHOTO_DECODE_BYTES, "photograph")
+}
+
+/// The bytes of a file a caller named, read through the one bounded door.
+///
+/// **A thin wrapper on [`schema::file::read_under_budget`], and the wrapper is the point.** The
+/// law — what a caller-named path costs an allocator, and how a file past the budget is refused
+/// — has one home, in the crate the engine can reach as well as this one; what lives here is the
+/// choice of *which* budget each verb reads and what it calls its subject in the refusal. Two
+/// implementations of the reading would be the second home design §2.10 forbids, and the door
+/// this crate cannot see is `engine::profile::read`, which is the daemon's `--profile` (note
+/// **N329**).
+fn read_named_file(path: &Utf8Path, budget: u64, subject: &str) -> Result<Vec<u8>> {
+    schema::file::read_under_budget(path, budget, subject)
 }
 
 /// `webcam-handler-cli calibrate …`, dispatched.
@@ -2236,11 +2250,11 @@ fn current_directory() -> Result<Utf8PathBuf> {
 ///
 /// [`Error::StorageIo`] naming the path, for a file that is missing or is not a snapshot.
 fn read_snapshot(path: &Utf8Path) -> Result<Snapshot> {
-    let bytes = std::fs::read(path).map_err(|error| Error::StorageIo {
-        path: path.to_owned(),
-        errno: error.raw_os_error(),
-        message: error.to_string(),
-    })?;
+    let bytes = read_named_file(
+        path,
+        schema::limits::MAX_SNAPSHOT_FILE_BYTES,
+        "control snapshot",
+    )?;
     serde_json::from_slice(&bytes).map_err(|error| Error::StorageIo {
         path: path.to_owned(),
         errno: None,
@@ -2266,15 +2280,16 @@ fn read_snapshot(path: &Utf8Path) -> Result<Snapshot> {
 ///
 /// # Errors
 ///
-/// [`Error::StorageIo`] naming the path when it cannot be read, is not JSON, carries no
-/// `schema_version`, or does not deserialize into a profile; [`Error::SchemaVersionForeign`]
-/// naming both versions for a profile this build does not read.
+/// [`Error::StorageIo`] naming the path when it cannot be read, is larger than
+/// [`schema::limits::MAX_PROFILE_FILE_BYTES`], is not JSON, carries no `schema_version`, or
+/// does not deserialize into a profile; [`Error::SchemaVersionForeign`] naming both versions
+/// for a profile this build does not read.
 fn read_profile(path: &Utf8Path) -> Result<DeviceProfile> {
-    let bytes = std::fs::read(path).map_err(|error| Error::StorageIo {
-        path: path.to_owned(),
-        errno: error.raw_os_error(),
-        message: error.to_string(),
-    })?;
+    let bytes = read_named_file(
+        path,
+        schema::limits::MAX_PROFILE_FILE_BYTES,
+        "device profile",
+    )?;
     let unreadable = |message: String| Error::StorageIo {
         path: path.to_owned(),
         errno: None,
@@ -2784,11 +2799,12 @@ mod tests {
 
     #[test]
     fn every_camera_taking_verb_teaches_the_whole_vocabulary_in_its_help() {
-        // The other half of the door below: the parser takes five spellings, and a reader who
-        // has never seen this tool learns which five from `--help` and from the guide generated
-        // out of the same string. That sentence was a transcription until note **N303** — five
-        // spellings written out in a doc comment a hundred lines from `SelectorScheme::ALL`,
-        // with nothing able to notice a sixth.
+        // The other half of the door below: the parser takes every spelling `SelectorScheme`
+        // declares, and a reader who has never seen this tool learns which ones from `--help`
+        // and from the guide generated out of the same string. That sentence was itself a
+        // transcription until note **N303** — five spellings written out in a doc comment a
+        // hundred lines from `SelectorScheme::ALL`, with nothing able to notice a sixth — and
+        // the count went on being one here until note **N319** took it out.
         //
         // Walked over the *rendered* help of every argument named `CAMERA` on every verb, in
         // both roots, because what is being asserted is what a reader is shown rather than what
@@ -4829,6 +4845,190 @@ mod tests {
     /// the edge is to `webcam-handler-imaging`, and the pixel type is that crate's business.
     fn png(image: imaging::Decoded) -> Vec<u8> {
         imaging::encode::png(&image).expect("a fixture encodes")
+    }
+
+    /// A file of `size` bytes that occupies none of them, and the path to name on a command
+    /// line.
+    ///
+    /// `set_len` rather than bytes, because what is under test is the number the *file system*
+    /// reports and the whole point of the bound is that nothing reads past it: a fixture
+    /// written a byte at a time would cost half a gigabyte of disk to prove that half a
+    /// gigabyte is never allocated.
+    fn sparse_file(dir: &tempfile::TempDir, name: &str, size: u64) -> Utf8PathBuf {
+        let path = Utf8PathBuf::from_path_buf(dir.path().join(name)).expect("a UTF-8 path");
+        std::fs::File::create(&path)
+            .expect("creates the fixture")
+            .set_len(size)
+            .expect("a sparse file of the size this arm names");
+        path
+    }
+
+    #[test]
+    fn a_file_past_this_builds_budget_is_refused_naming_it_rather_than_read_whole() {
+        // **The door the bound names was not the first door** (note **N322**). Both document
+        // verbs take two paths a caller named and both used to hand them straight to
+        // `std::fs::read`, which sizes its buffer from the file's own length — so the number
+        // reaching the allocator came off the command line exactly as the extents in a
+        // photograph's header do, one call before the budget note **N268** landed was ever
+        // consulted. Measured through the shipped binary at the time: a 3 GiB file answered
+        // `photo diff` correctly after a resident set of 3.1 GB, and under a memory ceiling
+        // below its size the same command was killed with exit 137, no `Failure` document and
+        // an empty standard output — the one failure shape the `--json` ruling forbids.
+        //
+        // Every verb of this crate that takes a path off a command line, because a bound on
+        // some of them is a ban on some spellings of the defect (note **N249**). Two of the
+        // three were bounded and `restore` was not, and it answered exactly the same way when
+        // it was measured a day later: killed at exit 137 with nothing on either stream (note
+        // **N329**). The fourth door is `engine::profile::read`, which this crate cannot reach
+        // and `crates/engine/src/profile.rs`'s own arm holds.
+        let dir = photo_scratch();
+        for (label, budget, path) in [
+            (
+                "photo diff",
+                schema::limits::MAX_PHOTO_DECODE_BYTES,
+                sparse_file(&dir, "huge.png", schema::limits::MAX_PHOTO_DECODE_BYTES + 1),
+            ),
+            (
+                "profile compare",
+                schema::limits::MAX_PROFILE_FILE_BYTES,
+                sparse_file(
+                    &dir,
+                    "huge.json",
+                    schema::limits::MAX_PROFILE_FILE_BYTES + 1,
+                ),
+            ),
+            (
+                "restore",
+                schema::limits::MAX_SNAPSHOT_FILE_BYTES,
+                sparse_file(
+                    &dir,
+                    "huge-snapshot.json",
+                    schema::limits::MAX_SNAPSHOT_FILE_BYTES + 1,
+                ),
+            ),
+        ] {
+            // `restore` reads the document before it resolves the camera, which is why
+            // `NeverAsked` can hold this arm: the refusal happens before any executor verb is
+            // reached, and `the_double_is_armed` is what makes that non-vacuous.
+            let argv: Vec<&str> = match label {
+                "restore" => vec![
+                    "webcam-handler-cli",
+                    "restore",
+                    "cam:integrated",
+                    path.as_str(),
+                ],
+                _ => {
+                    let mut split = label.split(' ');
+                    vec![
+                        "webcam-handler-cli",
+                        split.next().unwrap_or_default(),
+                        split.next().unwrap_or_default(),
+                        path.as_str(),
+                        path.as_str(),
+                    ]
+                }
+            };
+            let (answered, _, _) = compared(&argv);
+            let refusal = answered.expect_err(
+                "a file past this build's budget was read rather than refused, so what happens \
+                 next is whatever the allocator does",
+            );
+            let Error::StorageIo {
+                path: named,
+                errno,
+                message,
+            } = &refusal
+            else {
+                panic!("{label} refused a file for its size as {refusal:?}");
+            };
+            assert_eq!(named, &path, "the refusal must name the file it refused");
+            assert_eq!(
+                *errno, None,
+                "no system call failed here — this build declined to make one"
+            );
+            assert!(
+                message.contains(&(budget + 1).to_string())
+                    && message.contains(&budget.to_string()),
+                "the refusal must name what the file is and what this build will spend, so an \
+                 unattended reader can tell a file that is too big from a machine that is out \
+                 of memory: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_inside_the_budget_is_not_refused_for_its_size_on_either_document_verb() {
+        // The bound from the other side (N255). A file this build could have written reaches
+        // the reader that knows what it is: the photograph is compared, the profile is parsed,
+        // and neither refusal path above is taken — which is what stops the budget from being
+        // tightened onto the product it exists above. The sizes are read off the fixtures
+        // rather than assumed, because an arm that asserted "inside the budget" about a file
+        // that was not would be green for the wrong reason.
+        let dir = photo_scratch();
+        let picture = imaging::fixtures::checkerboard(32, 32, 4);
+        let photograph = write_file(&dir, "a.png", &png(imaging::Decoded::Gray(picture)));
+        let profile = corpus_path("chicony-rgb");
+        for (verb, sub, budget, path) in [
+            (
+                "photo",
+                "diff",
+                schema::limits::MAX_PHOTO_DECODE_BYTES,
+                photograph,
+            ),
+            (
+                "profile",
+                "compare",
+                schema::limits::MAX_PROFILE_FILE_BYTES,
+                profile,
+            ),
+        ] {
+            let size = std::fs::metadata(&path)
+                .expect("the fixture is there")
+                .len();
+            assert!(
+                size < budget,
+                "{path} is {size} bytes and this arm needs a file inside the {budget}-byte \
+                 budget"
+            );
+            let (answered, _, _) = compared(&[
+                "webcam-handler-cli",
+                verb,
+                sub,
+                path.as_str(),
+                path.as_str(),
+            ]);
+            answered.unwrap_or_else(|refusal| {
+                panic!("a {size}-byte file this build could have written was refused: {refusal}")
+            });
+        }
+    }
+
+    #[test]
+    fn a_snapshot_inside_the_budget_reaches_the_reader_that_knows_what_it_is() {
+        // `restore`'s side of the bound, from the other direction (note **N255**). The two
+        // document verbs above can assert the file was *answered*; this one cannot, because a
+        // snapshot this build could have written would go on to reach the executor and
+        // `NeverAsked` is what makes this whole module's arms mean anything. So what it asserts
+        // is which refusal came back: a small file that is not a snapshot is refused for not
+        // being one, which is only reachable once the size door has let it through. A bound
+        // tightened onto the product would answer the other sentence here.
+        let dir = photo_scratch();
+        let path = write_file(&dir, "not-a-snapshot.json", b"{\"hello\": 1}");
+        let (answered, _, _) = compared(&[
+            "webcam-handler-cli",
+            "restore",
+            "cam:integrated",
+            path.as_str(),
+        ]);
+        let refusal = answered.expect_err("this fixture is not a snapshot document");
+        let Error::StorageIo { message, .. } = &refusal else {
+            panic!("a small non-snapshot was refused as {refusal:?}");
+        };
+        assert!(
+            message.contains("not a snapshot document"),
+            "a file inside the budget has to reach the parser, so the refusal is about its \
+             shape and not about its size: {message}"
+        );
     }
 
     #[test]

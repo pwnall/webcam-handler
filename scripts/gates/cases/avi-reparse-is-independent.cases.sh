@@ -68,6 +68,48 @@ fail_case_the_writer_imports_the_reader_in_product_code() {
     gate_red_because "$avi_dir/write.rs names its sibling module" env "WCH_GATE_ROOT=$tree" "$GATE"
 }
 
+# **The shape the coupling would actually arrive in, and the one this predicate could not see.**
+# Measured at HEAD on a copy of the tree: the muxer imported the reader, `rustfmt` with this
+# repository's own settings wrapped the group, the stem landed first on a continuation line, and
+# the run printed a counted summary byte-identical to the unseeded tree's and exited 0. The old
+# matcher recognised a group by its own punctuation — `[{,]` before the stem — and grep is
+# line-based, so the newline rustfmt puts there was the whole of the hole (notes **N269**,
+# **N271**). The seed is written the way rustfmt leaves it, because the arm is about the position
+# rather than about braces: one long identifier is all it takes for the fill to break there.
+fail_case_the_reader_is_the_first_item_on_a_wrapped_imports_continuation_line() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    file="$tree/$avi_dir/write.rs"
+    gate_seed 's|^use super::{AviParams, CapReached, FrameOutcome, IntervalSource, RecordingCaps, RecordingSummary};$|use super::{\n    AviParams, CapReached, FrameOutcome, IntervalSource, RecordingCaps, RecordingSummary,\n    read,\n};|' "$file"
+    gate_red_because "$avi_dir/write.rs names its sibling module" env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The joiner's own bound, which arrives with it. An import whose braces never close would
+# otherwise swallow the rest of the module into one logical line, and the walk would be reading
+# one statement where the file has a hundred — a reader that cannot tell where a statement ends
+# must say so rather than answer about a file it invented.
+fail_case_an_import_in_the_muxer_never_closes() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    file="$tree/$avi_dir/write.rs"
+    gate_seed 's|^use super::{AviParams, CapReached, FrameOutcome, IntervalSource, RecordingCaps, RecordingSummary};$|use super::{AviParams, CapReached, FrameOutcome, IntervalSource, RecordingCaps;|' "$file"
+    gate_red_because 'opens an import whose braces are still open' env "WCH_GATE_ROOT=$tree" "$GATE"
+}
+
+# The false branch the two arms above need, and it was a live false positive until 2026-08-21: a
+# binding named `read` passed as the second argument of a call is `, read` in the text, which the
+# old punctuation matcher read as a grouped import of the sibling — measured red at HEAD on this
+# very seed. An import is read as an import now, so the only thing that names a module outside
+# one is a path, and this is green. The arm is red-able in both directions: widen the matcher
+# back and it fails here, narrow it to nothing and the arms above stop failing.
+pass_case_an_ordinary_binding_named_after_a_module_is_not_a_module_reference() {
+    local tree file
+    tree="$(gate_scratch_tree)"
+    file="$tree/$avi_dir/write.rs"
+    gate_seed 's|^fn geometry(|fn seam(a: usize, read: usize) -> usize {\n    a.wrapping_add(read)\n}\n\nfn geometry(|' "$file"
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 # The green direction for the same claim, and the arm this file's header calls the one that
 # matters. `write.rs`'s `mod tests` already imports `crate::avi::read`; this seeds a second use
 # of it inside that module, so the arm is about the *rule* rather than about the line that

@@ -34,6 +34,15 @@
 //    **Nothing vanishes from this panel** — AGENTS rule 6 — because a control that is
 //    missing from a UI is indistinguishable from a control the camera does not have.
 //
+// And a fifth, which is not in the seed fixture and is in `corpus/profiles/vivid.json`:
+//
+// 5. **A control's *shape* is the `HAS_PAYLOAD` flag's answer and not its type's.** An array
+//    control keeps its element type — `s32_2_element_array` is `type.kind: "integer"` — and
+//    carries `elems × elem_size` bytes behind a pointer, so a panel that chose its widget by
+//    type drew a scalar for it, showed none of the bytes the device reported, and offered a
+//    field whose every write is an `EINVAL`. [`widgetFor`] asks the flag first, which is what
+//    both backends do with the same descriptor (note **N135**).
+//
 // ## Requested is not applied, and the panel must show the difference
 //
 // Every write answers a `WriteReport` whose `Applied` carries `{requested, applied}` and the
@@ -182,8 +191,39 @@ function control(desc, pair, io) {
   return node;
 }
 
-/** The widget for a control's type — one arm per `schema::control::ControlType`. */
+/**
+ * The widget for a control — the descriptor's shape first, then one arm per
+ * `schema::control::ControlType`.
+ *
+ * **`HAS_PAYLOAD` decides, not the type's name and not the value this panel would find it
+ * convenient to send.** That is the same law both backends dispatch a *write* on:
+ * `webcam-handler-v4l2`'s `set` matches `(has_payload(flags), &value)` and has exactly two
+ * accepting arms, `(false, Int)` and `(true, Bytes)`, and `webcam-handler-fake` was moved onto
+ * the same flag when it was found on the wrong side of it (design §2.3, note **N135**). The flag
+ * and the type separate on an **array** control, where the kernel keeps the element type —
+ * `INTEGER`, say — and sets `HAS_PAYLOAD` because the value is `elems × elem_size` bytes behind
+ * a pointer.
+ *
+ * This panel read the type alone until now, and `vivid`'s `s32_2_element_array` is what that
+ * cost on a screen: `type.kind` is `integer`, so the card was drawn by [`scalar`]; `currentInt`
+ * answers `null` for a `bytes` value, so the eight bytes the device reported were dropped from
+ * the card entirely — while the neighbouring `u32_1_element_array` showed `4 bytes · 18 00 00
+ * 00` — and the empty field left in their place carried the note "the device did not say where",
+ * which is a sentence about a control the device had described in full. Every value typed into
+ * that field went out as `{kind:"int"}` and came back `device_io … (errno 22)`: a widget whose
+ * every gesture is a refusal, behind a green rung. Rule 6 is the half that carries it — a
+ * reported value dropped from the panel — and N135 is its precedent. Note **N312** records the
+ * measurement and the one thing this repair deliberately leaves to another lens.
+ *
+ * A control whose value nothing may write and everything must show is exactly what [`payload`]
+ * renders, so that is where the flag sends it, whatever its type is called. What it *says* is
+ * [`unwritableBecause`]'s, so that the flag branch cannot cost a control the sentence its type
+ * had earned.
+ */
 function widgetFor(desc, io, notes) {
+  if (desc.flags.known.includes("has_payload")) {
+    return payload(desc, unwritableBecause(desc));
+  }
   switch (desc.type.kind) {
     case "integer":
     case "integer64":
@@ -206,18 +246,64 @@ function widgetFor(desc, io, notes) {
     case "u32":
     case "area":
     case "rect":
-      return payload(desc, "a compound value this panel shows and does not write");
     case "unknown":
-      // The arm AGENTS rule 6 is about, and the one that must never be a `return null`.
-      // The discriminant is the kernel's, preserved exactly by `ControlType::Unknown`, so
-      // an operator can look it up even though this build cannot name it.
-      return payload(desc, `a control type this build does not name (raw ${controlId(desc.type.raw)}) [PF:1]`);
+      // The compound types, and the arm AGENTS rule 6 is about — a type the kernel emitted and
+      // `schema` carried through rather than rejecting \[PF:1\]. None of them has a scalar this
+      // panel could write, and the branch that must never be a `return null` is this one.
+      return payload(desc, unwritableBecause(desc));
     default:
       // Not reachable from a daemon of this version, and here anyway: `ControlType` is a
       // Rust enum that grows, and a page that met a new arm with a blank row would drop a
       // control silently. A `default` that renders something is the JavaScript spelling of
       // the payload-carrying fallback arm AGENTS rule 6 asks a `match` for.
-      return payload(desc, `a control kind this page does not know: ${desc.type.kind}`);
+      return payload(desc, unwritableBecause(desc));
+  }
+}
+
+/**
+ * Why this panel is showing a value rather than offering to write one — the most specific true
+ * thing it can say about the descriptor.
+ *
+ * **One home for three sentences, because two branches reach the same descriptors from two
+ * directions.** [`widgetFor`] asks the `HAS_PAYLOAD` flag first and its own type walk second,
+ * and the seed fixture's `region_of_interest_rectangle` answers *both* — an `Unknown` type
+ * carrying sixteen bytes behind a pointer. A flag branch with a sentence of its own would have
+ * taken the raw discriminant off that card, which is the one number an operator can look up and
+ * the whole of what rule 6 keeps there.
+ *
+ * The three arms are the three different things the panel can be sure of, and they are told
+ * apart rather than folded together: the kernel emitted a type this *build* does not name; the
+ * type is one this build names and the value is a payload; or the daemon sent a kind this
+ * *page* does not name, which is a schema that grew.
+ */
+function unwritableBecause(desc) {
+  switch (desc.type.kind) {
+    case "unknown":
+      // The discriminant is the kernel's, preserved exactly by `ControlType::Unknown`, so an
+      // operator can look it up even though this build cannot name it.
+      return `a control type this build does not name (raw ${controlId(desc.type.raw)}) [PF:1]`;
+    case "integer":
+    case "integer64":
+    case "boolean":
+    case "menu":
+    case "integer_menu":
+    case "bitmask":
+    case "string":
+    case "button":
+    case "control_class":
+    case "u8":
+    case "u16":
+    case "u32":
+    case "area":
+    case "rect":
+      // Every kind `schema::control::ControlType` names, walked rather than defaulted to, so
+      // that the arm below is only ever reached by a vocabulary this page has not been taught.
+      // "Compound" is the kernel's own word for a value behind a pointer, and it is what an
+      // `integer` array is: `vivid`'s `s32_2_element_array` arrives here, and the reader's
+      // question — why is my integer not a slider — is answered by the byte count beside it.
+      return "a compound value this panel shows and does not write";
+    default:
+      return `a control kind this page does not know: ${desc.type.kind}`;
   }
 }
 
@@ -409,7 +495,17 @@ function bitmask(desc, io) {
   return [field, el("span", { class: "note" }, "hexadecimal or decimal; the device names no bits")];
 }
 
-/** A string control. */
+/**
+ * A string control the device did **not** flag as a payload.
+ *
+ * Reached only through [`widgetFor`]'s type arm, which is downstream of the `HAS_PAYLOAD`
+ * question — so this is the one descriptor shape a `{kind:"text"}` write is right for, and the
+ * only one: `webcam-handler-fake`'s `text_write` takes it, and `webcam-handler-v4l2`'s `set` has
+ * no `(false, Text)` arm because a kernel `STRING` control always carries `HAS_PAYLOAD` and
+ * therefore never arrives here. That the two backends differ on a descriptor no real device
+ * produces is an E5 resemblance question about the fake rather than about this file; what this
+ * file owes is that the flag decides, which is the branch above.
+ */
 function text(desc, io) {
   const field = el("input", {
     type: "text",

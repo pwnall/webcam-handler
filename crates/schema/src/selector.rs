@@ -148,7 +148,7 @@ pub fn scheme_hint(requested: &str) -> String {
     format!(" — a camera selector is one of: {}", vocabulary())
 }
 
-/// One camera, named in any of D14's five spellings.
+/// One camera, named in any of D14's spellings.
 ///
 /// Built only by [`parse`] — including on the way in off a socket, where the derived
 /// `Deserialize` a `#[serde(transparent)]` newtype would have given us is exactly the
@@ -187,8 +187,8 @@ impl CameraSelector {
 
     /// The id this selector names, when it names one directly.
     ///
-    /// `None` for the four spellings that need the enumeration to answer — which is every
-    /// one of them except an id, and the reason resolution lives in the engine rather than
+    /// `None` for the spellings that need the enumeration to answer — which is every one of
+    /// them except an id, and the reason resolution lives in the engine rather than
     /// on this type.
     #[must_use]
     pub const fn as_id(&self) -> Option<&CameraId> {
@@ -581,5 +581,64 @@ mod tests {
             );
         }
         assert_eq!(prefixed, 4, "only a node path is recognized by shape");
+    }
+
+    #[test]
+    fn the_spelling_this_build_teaches_is_the_spelling_this_build_parses() {
+        // The last unguarded exit from the one home. `example()` is the string every reader
+        // renders — the refusal an unattended caller learns the grammar from, `--help` on
+        // every `<CAMERA>` argument, the guide's selector table, the wire's `invalid_value`
+        // and the JSON Schema description — and until this walk nothing tied it to `parse`.
+        // `prefix()` is chained to the parser through `samples()` two arms up; `example()`
+        // hung off the end of that chain unattached, so one arm rewritten to
+        // `"buspath:<interface-path>"` left the whole workspace green, `bus:` still
+        // resolving, and every reader teaching a spelling this build refuses (note **N320**).
+        //
+        // Driven by handing `parse` the scheme literal *the example itself teaches*, with a
+        // body from the samples the arms above already drive, rather than by comparing the
+        // example against `prefix()`: the parser is then the judge of the taught spelling,
+        // which is the fact the readers are wrong about.
+        //
+        // The guard is the scheme literal — the half `parse` dispatches on — and not the
+        // body: three of the five bodies are metasyntactic (`<vid>:<pid>`, `<interface-path>`,
+        // `<text>`) and there is no string a parser can be handed to check them, so a
+        // `usb:<vid>:<pid>` degraded to `usb:<vid>` would still pass here. That residual is
+        // stated rather than hidden, and it is the reason the samples above are hand-written
+        // per scheme.
+        let samples = samples();
+        for scheme in SelectorScheme::ALL {
+            let example = scheme.example();
+            let Some((taught, _)) = example.split_once(':') else {
+                let parsed = parse(example).unwrap_or_else(|refusal| {
+                    panic!(
+                        "{scheme:?} teaches {example}, which carries no scheme literal and is \
+                         not a spelling this build parses either: {refusal}"
+                    )
+                });
+                assert_eq!(parsed.scheme(), *scheme, "{example} named the wrong scheme");
+                continue;
+            };
+            let (_, sample) = samples
+                .iter()
+                .find(|(candidate, _)| candidate == scheme)
+                .expect("every scheme in the vocabulary has a sample spelling here");
+            let (_, body) = sample
+                .split_once(':')
+                .expect("a sample for a scheme whose example carries a literal carries one too");
+            let taught = format!("{taught}:{body}");
+            let parsed = parse(&taught).unwrap_or_else(|refusal| {
+                panic!(
+                    "{scheme:?} teaches readers to write {example}, and {taught} is not a \
+                     spelling this build parses at all: {refusal}"
+                )
+            });
+            assert_eq!(
+                parsed.scheme(),
+                *scheme,
+                "{scheme:?} teaches readers to write {example}, and {taught} parses as a \
+                 {:?} instead",
+                parsed.scheme()
+            );
+        }
     }
 }

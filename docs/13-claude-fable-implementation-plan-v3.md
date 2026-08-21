@@ -102,8 +102,23 @@ excludes), **502 fail arms across 43 case files** (`selftest.sh` prints the pair
 and is the authority; these are what the files hold), 24 `g7` rows, 17 `g8` rows, 9 `g9` rows,
 and the browser rung at **37 claims and 387 assertions**, which are `browser/claims.json`'s own
 two numbers and `web_browser.rs`'s floor. The docs-only batch below `556e4d2` adds no
-predicate, no case file, no criteria row and no test, so the same six figures describe the tree
-this sentence is committed into.
+predicate, no case file, no criteria row and no test, so the same six figures described the tree
+this sentence was committed into.
+
+**The P7e/P8d/P9d gate-close review's repairs move four of the six** (2026-08-21), and the four
+are re-measured here rather than reasoned about from the diff. The browser rung is **44 claims and
+461 assertions** — still `browser/claims.json`'s own two numbers and `web_browser.rs`'s floor,
+raised in the same diff as the seven claims that landed the G9 lens's findings (notes
+**N310**–**N314**). The suite is **514 fail arms across the same 43 case files**, twelve of them
+the red-on-inverse arms for the five gate repairs the review returned (notes
+**N315**–**N318** and **N323**). And
+the criteria table is **25 `g7` rows, 22 `g8` rows, 12 `g9` rows**: g8 and g9 each gain the
+`run-all.sh` + `selftest.sh` pair that g0 through g7 open with and those two blocks opened without,
+g8 gains the `smoke-hw.sh` row P8c's own **Proves** bullet was owed and the two reconcilers whose
+committed artifacts P8 moved, g9 gains the artifact reconciler for the same reason, and g7 names
+the `cli-parity.sh` its P7d bullet delegates a claim to in as many words (note **N318**). The
+predicate count is the one figure of the six this batch leaves alone: **43**, because every repair
+was to a predicate that already existed.
 
 **The commit is named rather than called "the last of those", and naming it corrected one number
 and removed another** (2026-08-20). A sentence whose antecedent is "the last row of the table

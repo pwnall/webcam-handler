@@ -32,9 +32,17 @@
 // failure *extends* its sentence rather than replacing it: a page that presented no token
 // cannot be carrying the wrong one, and telling an operator otherwise sends them looking for a
 // token they never had (E16 §2 found that overwrite the first time; P5e found the second, in
-// the `catch` below). `watchDevices` opens its sentence with the word "connected" and therefore
-// declines to write at all once the socket is what ended. And `socketClosed` is final, because
-// from that point on the page's own advice is to reload.
+// the `catch` below). `watchDevices` and `listRefused` both open their sentence with the word
+// "connected" and therefore decline to write at all once the socket is what ended — each on
+// `rpc.js`'s `SOCKET_CLOSED` sentinel, compared by identity, on both arrivals of it: a
+// subscription told the socket ended and a call rejected because it did. And `socketClosed` is
+// final, because from that point on the page's own advice is to reload.
+//
+// **The order those three run in is fixed and is against them**, which is why the rule has to be
+// enforced rather than observed: `rpc.js`'s close handler rejects every pending call and tells
+// every stream *before* it calls `onClose`, so `socketClosed` writes the final sentence and the
+// microtasks carrying those rejections run afterwards, on top of it. A writer that only wrote
+// "when it had something to say" would still be last.
 //
 // ## What this page will not do
 //
@@ -97,6 +105,21 @@ const state = {
   socketOpen: false,
   /** Whether a photo is in flight, which is one of the three reasons the button is unusable. */
   taking: false,
+  /**
+   * Which view of the page the photo slot belongs to, counted so an answer that arrives after
+   * the operator has moved on can be told it is late.
+   *
+   * **Bumped by the camera switch rather than by the photo**, which is where this fence differs
+   * from `controlsRequest` above it and is the honest reason it is a number. Only one
+   * `wch_photo` is ever in flight — [`takePhoto`] sets `taking` and `refreshTakePhoto` disables
+   * the button in the same task as the click, before the first await — so there is no second
+   * answer about the same camera to arrive out of order, and the case `refreshControls` argues
+   * a counter for is not reachable here. What *is* reachable, and what a comparison of camera
+   * ids cannot see, is an operator who walks to another camera and back while the capture runs:
+   * the ids match again, and the frame about to arrive is still a picture of a slot [`select`]
+   * has twice emptied (docs/11 **M32**, notes **N154**, **N156**, **N310**).
+   */
+  photoView: 0,
 };
 
 /**
@@ -282,8 +305,25 @@ async function main() {
  * than a flourish: the socket really is up, this is a statement about a *call*, and a writer
  * that dropped the word would be claiming something about the connection it has no evidence
  * for. `socketClosed` is the writer that may say the connection has ended, and it is final.
+ *
+ * **Which is why the first thing it does is decline to write.** A `wch_list` still on the wire
+ * when the connection dies is rejected by `rpc.js`'s close handler *before* that handler calls
+ * `onClose` — "Last, and the order is the point" — so this `catch` runs in the rejection's
+ * microtask, after `socketClosed` has written the page's final sentence, and painted over it:
+ * `connected; this daemon refused to list its cameras (the connection to webcam-handler-daemon
+ * closed) …`, the word `connected` on a page with no connection and the one piece of advice an
+ * operator can act on gone. `watchDevices` declines on the same sentinel and its guard argues
+ * the case at length; this function became a `catch` handler in the same N155 repair that made
+ * the arrival reachable and did not get one. The header's rule is not a preference — this is
+ * the third wrong sentence in this element (E16 §2, then P5e; note **N311**).
+ *
+ * Asked by **identity**, of `rpc.js`'s own sentinel, exactly as `recording.js` and
+ * `calibration.js` ask it: a daemon that sends a `kind` of `socket_closed` cannot forge it.
  */
 function listRefused(err) {
+  if (err.reason === SOCKET_CLOSED) {
+    return;
+  }
   say(
     nodes.connection,
     `connected; this daemon refused to list its cameras (${refusalSentence(err)}), so the ` +
@@ -404,6 +444,11 @@ async function select(camera) {
     state.recording = recording.watch(state.rpc, camera, nodes.recordingStatus);
   }
   refreshTakePhoto();
+  // The slot is emptied and the view it belonged to is retired in the same statement group,
+  // because they are one act: a `wch_photo` in flight is seconds of settle frames and a capture,
+  // and the answer to it belongs to the camera this click has just walked away from — the fifth
+  // element of docs/11 **M32**, and the one that had no fence (note **N310**).
+  state.photoView += 1;
   nodes.photoFrame.removeAttribute("src");
   fill(nodes.photoReport, []);
   nodes.photoStatus.textContent = "";
@@ -503,12 +548,20 @@ function write(camera, control, value) {
 async function takePhoto() {
   state.taking = true;
   refreshTakePhoto();
+  // Read before the first await, for [`refreshControls`]' reason: a fence installed after the
+  // arrival cannot see it.
+  const view = state.photoView;
   try {
-    await photo.take(state.rpc, state.camera, {
-      status: nodes.photoStatus,
-      frame: nodes.photoFrame,
-      report: nodes.photoReport,
-    });
+    await photo.take(
+      state.rpc,
+      state.camera,
+      {
+        status: nodes.photoStatus,
+        frame: nodes.photoFrame,
+        report: nodes.photoReport,
+      },
+      () => view === state.photoView,
+    );
   } finally {
     state.taking = false;
     refreshTakePhoto();
@@ -576,6 +629,16 @@ async function watchDevices(retry = true) {
       },
     );
   } catch (err) {
+    // **The same guard as the `ended` callback above, on the other arrival of the same fact.**
+    // The one up there covers a *stream* told the socket ended; this covers the `subscribe`
+    // *call* rejected by the same close handler, which runs before `onClose` and therefore
+    // lands on top of the sentence that says the connection is over. The comment beside that
+    // guard is an argument for both arms and only one of them had it, which is how
+    // `#connection` came to read "connected; this daemon cannot watch for device changes (the
+    // connection to webcam-handler-daemon closed) …" on a dead connection (note **N311**).
+    if (err.reason === SOCKET_CLOSED) {
+      return;
+    }
     say(
       nodes.connection,
       `connected; this daemon cannot watch for device changes (${refusalSentence(err)}), so the camera list is a snapshot`,

@@ -2,7 +2,7 @@
 //!
 //! The unit arms in `engine::resolve` drive hand-built fixtures, which is the right shape for
 //! "does the matcher match". This file asks the neighbouring question that only real captured
-//! devices can answer: **do the five spellings behave the way D14 says on the machines this
+//! devices can answer: **do D14's spellings behave the way it says on the machines this
 //! project has actually seen?** The fixture is *every* committed profile — `corpus::load_all`
 //! walks the directory and filters nothing, so the population is whatever `corpus/profiles/`
 //! holds rather than a number this comment would have to keep. What it holds today is the
@@ -259,6 +259,146 @@ fn every_scheme_in_the_vocabulary_resolves_something_on_this_machine() {
         exercised += 1;
     }
     assert_eq!(exercised, SelectorScheme::ALL.len());
+}
+
+/// The schemes whose spelling a caller **cannot** build out of the document this tool answers
+/// with, each with the reason it is here.
+///
+/// A named, counted exception rather than a silence: the arm below walks
+/// [`SelectorScheme::ALL`], so a sixth scheme is either read back out of the document or is
+/// listed here, and a scheme listed here that *has* become readable fails the arm rather than
+/// sitting on as a stale excuse.
+const NOT_IN_THE_DOCUMENT: &[(SelectorScheme, &str)] = &[(
+    SelectorScheme::UsbId,
+    "`UsbId` derives `Serialize`, so `fingerprint.usb_id` is an object of two decimal \
+     integers while the grammar takes four-digit lower-case hex — asked in hex, answered in \
+     decimal, in one exchange. Whether that shape changes is the owner's call under note \
+     **N109**'s three options and note **N325** records the measurement",
+)];
+
+#[test]
+fn every_spelling_this_tool_answers_with_can_be_read_back_out_of_its_own_document() {
+    // **The round trip the primary consumer actually performs.** An agent asks `list`, holds
+    // the `--json` answer and has to name one of those cameras again; a harness comparing two
+    // machines holds the same document and has to ask the other machine about the device it
+    // describes. Both of them build a selector out of a listing entry by substituting a
+    // string, so what matters is not that the *type* round-trips through serde — the schema
+    // suite drives that — but that the document carries a value D14's grammar takes.
+    //
+    // Driven over `SelectorScheme::ALL` and over every camera the corpus replays, with the one
+    // scheme that cannot be read back declared above rather than skipped in silence. An
+    // absent fact is a third case and neither of the first two: a device that reports no
+    // serial \[PF:8\] and a virtual driver that is on no USB \[the vivid capture\] carry
+    // `null`, which is an absence this build represents and not a shape it got wrong.
+    let cameras = machine();
+    let mut read_back = 0;
+    let mut absent = 0;
+    let mut excepted = 0;
+    for info in &cameras {
+        let document = serde_json::to_value(info).expect("a listing entry serializes");
+        for scheme in SelectorScheme::ALL {
+            let (field, carried) = spelling_in_document(&document, *scheme);
+            let Some(spelling) = carried else {
+                if document
+                    .pointer(field)
+                    .is_none_or(serde_json::Value::is_null)
+                {
+                    absent += 1;
+                    continue;
+                }
+                let reason = NOT_IN_THE_DOCUMENT
+                    .iter()
+                    .find(|(excepted, _)| excepted == scheme)
+                    .map(|(_, reason)| *reason);
+                assert!(
+                    reason.is_some(),
+                    "{scheme:?} is carried at {field} in a shape D14's grammar does not take, \
+                     and nothing in NOT_IN_THE_DOCUMENT says why: {}",
+                    document[field.trim_start_matches('/')]
+                );
+                excepted += 1;
+                continue;
+            };
+            let parsed = parse(&spelling).unwrap_or_else(|err| {
+                panic!(
+                    "{field} answered {spelling}, which this build's \
+                     own grammar refuses: {err}"
+                )
+            });
+            assert_eq!(
+                parsed.scheme(),
+                *scheme,
+                "{field} answered {spelling}, which parses as another scheme"
+            );
+            assert_eq!(
+                parsed.to_string(),
+                spelling,
+                "{field}'s value does not survive the grammar unchanged"
+            );
+            // And it names something. `CameraAmbiguous` is an answer — the corpus is built
+            // out of collisions on purpose — but `CameraUnknown` would mean this tool printed
+            // a value that names no camera it can see.
+            if let Err(err) = resolve_one(&cameras, &spelling) {
+                assert!(
+                    matches!(err, Error::CameraAmbiguous { .. }),
+                    "{spelling} came out of this tool's own answer and resolved to nothing: \
+                     {err}"
+                );
+            }
+            read_back += 1;
+        }
+    }
+    // Neither an empty walk nor a walk that excepted everything (note **N231**).
+    assert!(
+        read_back >= cameras.len(),
+        "only {read_back} spellings were read back"
+    );
+    assert_eq!(
+        excepted,
+        cameras.len() * NOT_IN_THE_DOCUMENT.len() - absent_usb_ids(&cameras),
+        "every camera that carries a USB id at all must have hit the declared exception"
+    );
+    assert!(
+        absent > 0,
+        "the corpus holds a device with an absent fact, and this walk must \
+         have met it rather than treating an absence as a shape"
+    );
+}
+
+/// How many committed cameras carry no USB id at all — the vivid capture, which is on no bus.
+fn absent_usb_ids(cameras: &[CameraInfo]) -> usize {
+    cameras
+        .iter()
+        .filter(|info| info.fingerprint.usb_id.is_none())
+        .count()
+}
+
+/// Where a scheme's spelling lives in a serialized [`CameraInfo`], and the spelling itself when
+/// the document carries it as a string D14's grammar takes.
+///
+/// The JSON pointer is returned either way so a failure names the field rather than the scheme
+/// alone: what a reader has to go and look at is the property, and `usb_id` is one property of
+/// one struct rather than a fact about selectors.
+fn spelling_in_document(
+    document: &serde_json::Value,
+    scheme: SelectorScheme,
+) -> (&'static str, Option<String>) {
+    let (field, prefixed) = match scheme {
+        SelectorScheme::Id => ("/id", false),
+        SelectorScheme::NodePath => ("/nodes/0/path", false),
+        SelectorScheme::BusPath => ("/fingerprint/bus_path", true),
+        SelectorScheme::UsbId => ("/fingerprint/usb_id", true),
+        SelectorScheme::Serial => ("/fingerprint/serial", true),
+    };
+    let body = document
+        .pointer(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let spelling = body.map(|body| match (prefixed, scheme.prefix()) {
+        (true, Some(prefix)) => format!("{prefix}{body}"),
+        _ => body,
+    });
+    (field, spelling)
 }
 
 #[test]

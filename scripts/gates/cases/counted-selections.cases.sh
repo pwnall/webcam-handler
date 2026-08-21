@@ -177,3 +177,80 @@ fail_case_criteria_table_deleted() {
     gate_red_because '/scripts/gates/phase-criteria.tsv; there are no selections to count' \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
+
+# --------------------------------------------------- every phase block runs the suite and its
+# self-test
+#
+# The claim landed with the two rows it is about: g8 and g9 were the only blocks in the table
+# without the `run-all.sh` + `selftest.sh` pair that g0 through g7 each open with, and no reader
+# of the table could go red on that. These are its inverses, one per half, because the two
+# `gate_fail`s are two sentences and an arm that seeded both would not say which one fired.
+#
+# The seed removes the pair from **one** phase rather than from every block that carries it: the
+# claim is per-phase, and a table with the pair gone everywhere would be red under a rule that
+# only ever looked at the first block. `_only_tests_row` runs first so the stub lister has one
+# selection to answer for and the arm is about the row set rather than about a hundred rows the
+# stub says `mismatch` to.
+#
+#   $1  the scratch tree
+#   $2  the phase whose row to remove
+#   $3  the script the removed row runs
+_drop_command_row() {
+    local tree="$1" phase="$2" script="$3" table
+    table="$tree/scripts/gates/phase-criteria.tsv"
+    awk -F'\t' -v phase="$phase" -v script="$script" \
+        '!($1 == phase && $2 == "command" && $3 == script)' "$table" >"$table.seeded"
+    if ! cmp -s "$table" "$table.seeded"; then
+        mv "$table.seeded" "$table"
+        return 0
+    fi
+    rm -f "$table.seeded"
+    # `gate_seed_died` and not a second `printf` into the same file: the one home for "say a
+    # seed did not apply" writes the sentence on **stderr** as well as into the report, and an
+    # arm run by hand — which is the ordinary move while a gate is being written — is a console
+    # with nothing on it otherwise, a `return 0` from a `fail_case_` reading as a pass. This was
+    # the only file in `cases/` that named `gate_seed_report` itself (note **N330**).
+    gate_seed_died "no $script row to remove from $phase: the seed this arm is built on is gone"
+    return 1
+}
+
+fail_case_a_phase_block_never_runs_the_predicate_suite() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'one selection the stub answers for, so this arm is about the row set'
+    _drop_command_row "$tree" g0 ./scripts/gates/run-all.sh || return 0
+    gate_red_because 'none of them runs ./scripts/gates/run-all.sh' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+fail_case_a_phase_block_never_runs_the_predicates_self_test() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'one selection the stub answers for, so this arm is about the row set'
+    _drop_command_row "$tree" g0 ./scripts/gates/selftest.sh || return 0
+    gate_red_because 'none of them runs ./scripts/gates/selftest.sh' \
+        env "WCH_GATE_ROOT=$tree" "WCH_GATE_NEXTEST_LIST=$lister" "$GATE"
+}
+
+# The green direction the two arms above need, and it is not `pass_case`: what has to be shown is
+# that the rule reads **each phase's own rows** rather than the table as a whole. A phase that
+# carries both rows is green while a *different* phase carries neither in the same table would be
+# a rule nothing could rely on — so this seeds the pair into a phase that has it and takes the
+# suite row out of nothing, leaving a table every block satisfies by a route the reader can see.
+pass_case_a_phase_that_carries_the_pair_twice_is_still_a_phase_that_carries_it() {
+    local tree lister
+    tree="$(gate_scratch_tree)"
+    lister="$tree/stub-lister.sh"
+    _stub_lister "$lister"
+    _only_tests_row "$tree" 'package(webcam-handler-schema)' \
+        'one selection the stub answers for, so this arm is about the row set'
+    printf 'g0\tcommand\t./scripts/gates/run-all.sh\ta second naming of the suite, which is still a naming of it\n' \
+        >>"$tree/scripts/gates/phase-criteria.tsv"
+    WCH_GATE_ROOT="$tree" WCH_GATE_NEXTEST_LIST="$lister" "$GATE"
+}

@@ -1246,9 +1246,11 @@ const _: () = assert!(2 * MAX_EXIF_TEXT_BYTES + 1024 < MAX_EXIF_APP1_BYTES);
 /// **The bound on a number the file supplies.** `photo diff` takes two paths a caller named
 /// and a compressed file's *header* declares its own extents, so the buffer the decode needs
 /// is a device-independent, caller-supplied number reaching an allocator — and the allocator's
-/// answer to a number it cannot serve is `abort`, not a `Result`. A 72-byte PNG whose IHDR
+/// answer to a number it cannot serve is `abort`, not a `Result`. A header-only PNG whose IHDR
 /// declares 200 000 x 200 000 RGBA asks for 160 GB and takes the process down with it, which
-/// on a `--json` run is the one shape that prints no document at all.
+/// on a `--json` run is the one shape that prints no document at all — and the file that does
+/// it is a few dozen bytes long, which is why the bound is read off the header rather than
+/// inferred from how much the caller handed over.
 ///
 /// Five hundred and twelve mebibytes, which is `image`'s own `Limits::default()` and is
 /// deliberately the same number: this build reads what that crate's decoders write, so a cap
@@ -1260,9 +1262,50 @@ const _: () = assert!(2 * MAX_EXIF_TEXT_BYTES + 1024 < MAX_EXIF_APP1_BYTES);
 /// **The refusal is a `Failure` document and not a shortened answer**, unlike
 /// [`MAX_EXIF_TEXT_BYTES`]: a photograph is the subject of the comparison rather than
 /// metadata beside it, and half a photograph compared with a whole one is a number with
-/// nothing underneath it. Read by `imaging::compare::read`, which is the one door a stored
-/// photograph enters this build through.
+/// nothing underneath it.
+///
+/// **Two doors read it, and the file is the first of them.** `imaging::compare::read` is
+/// where a photograph's *header* is measured, and [`crate::file::read_under_budget`] — reached
+/// from `cli_core`'s `read_photograph` — is where its *file* is, because a file's own length is
+/// a caller-supplied number reaching the allocator one call earlier. This
+/// bound serves both: every format this build writes spends at most one file byte per raster
+/// byte, so a file past this number cannot be a photograph it wrote, whatever its header goes
+/// on to declare. That sentence used to read "the one door a stored photograph enters this
+/// build through", and it was the line that made the earlier door invisible to review (note
+/// **N322**).
 pub const MAX_PHOTO_DECODE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// The most bytes a device profile read off a path a caller named may ask this build to
+/// allocate.
+///
+/// The same door as [`MAX_PHOTO_DECODE_BYTES`]'s file half, one verb along: `profile compare`
+/// takes two paths and reads them whole before a single byte is parsed, so a caller who names
+/// a recording, a core file or a typo is a caller-supplied number reaching an allocator.
+///
+/// Derived rather than chosen. A profile is answered whole in one JSON-RPC response, so a
+/// document larger than [`RPC_MAX_RESPONSE_BYTES`] is one this tool could never have handed
+/// anybody — and the largest capture in `corpus/` is the vivid one at about 1.3 MB, seventy-
+/// seven controls with compound payloads, which is the widest device this project has met.
+/// Fifty times that, and still small enough that a mistyped path answers with a `Failure`
+/// document rather than with whatever the allocator does next.
+pub const MAX_PROFILE_FILE_BYTES: u64 = RPC_MAX_RESPONSE_BYTES as u64;
+
+/// The most bytes a control snapshot read off a path a caller named may ask this build to
+/// allocate.
+///
+/// The third of the four doors a path off a command line reaches an allocator through, and it
+/// was open for exactly as long as the other two: `restore cam:x BIG` handed `std::fs::read` a
+/// 3 GiB file and, under a memory ceiling below its size, was killed with exit 137 and nothing
+/// on either stream — measured through the shipped binary (note **N329**).
+///
+/// Derived from [`RPC_MAX_RESPONSE_BYTES`] for [`MAX_PROFILE_FILE_BYTES`]'s reason and not
+/// separately argued: a snapshot is the control set of one camera, it crosses the wire whole in
+/// one JSON-RPC answer, and a document larger than a response this tool could hand anybody is
+/// not one it wrote. It is the same number as the profile budget on purpose — a profile carries
+/// a snapshot inside it, so a snapshot bound *above* the profile bound would be a cap that
+/// cannot bind, and one below it would refuse a snapshot this build has already handed over
+/// inside a profile it accepted.
+pub const MAX_SNAPSHOT_FILE_BYTES: u64 = MAX_PROFILE_FILE_BYTES;
 
 /// The most processes a `Busy` refusal names.
 ///

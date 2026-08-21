@@ -38,7 +38,7 @@ use schema::session::{
     SweepAdjustment,
 };
 use schema::snapshot::{RestoreOutcome, RestoreReport, Snapshot, UnrestorableReason};
-use schema::video::{IntervalSource, RecordReport, RecordingEnd};
+use schema::video::{IntervalSource, IntervalStats, RecordReport, RecordingEnd, StreamStats};
 
 /// Where rendered output goes.
 ///
@@ -1004,8 +1004,17 @@ fn adjustment_text(adjustment: &Adjustment) -> String {
 ///
 /// The `--json` half is [`RecordReport`] verbatim, which is the whole of this crate's `--json`
 /// contract; the human half is the table beside it. The two show the **same** facts, which is
-/// why every row below is a field of the document rather than something computed here — with
-/// one exception that proves the rule: the mean interval is
+/// why every row below is a field of the document rather than something computed here — and
+/// why `the_human_table_shows_every_field_of_the_record_document` destructures
+/// [`RecordReport`], [`StreamStats`] and [`IntervalStats`] rather than reading a list written
+/// beside them, so a field added to any of the three stops compiling until it is either on
+/// this table or named there with its reason. That sentence was a claim nothing could go red
+/// on until 2026-08-21, and it was false in the direction it is bolded in: the document
+/// carried the whole of D16's delivery record — the gap runs, the interval distribution and
+/// the skew — and the table showed one number of it, so an operator watching a link stall for
+/// 180 ms against a 60 ms mean read `dropped 1` and nothing else (note **N326**).
+///
+/// With one exception that proves the rule: the mean interval is
 /// [`schema::video::RecordingSummary::measured_interval_us`], the schema's own subtraction,
 /// so a `--json` consumer reaches the identical number by calling the identical function
 /// rather than by re-deriving `span / (frames - 1)` and getting `span / frames`.
@@ -1043,7 +1052,10 @@ pub(crate) fn record(report: &RecordReport, as_json: bool, out: &mut Output) -> 
         ("wall clock", format!("{} ms", report.wall_clock_ms)),
         ("declared rate", declared_rate_text(report)),
         ("measured rate", measured_rate_text(report)),
-    ] {
+    ]
+    .into_iter()
+    .chain(delivery_rows(&report.stats))
+    {
         table.add_row(vec![Cell::new(field), Cell::new(value)]);
     }
     out.line(&table.to_string())?;
@@ -1079,6 +1091,73 @@ pub(crate) fn record(report: &RecordReport, as_json: bool, out: &mut Output) -> 
         ));
     }
     Ok(())
+}
+
+/// D16's delivery record, as the rows beneath the take's own.
+///
+/// **Why these are payload and not metadata.** D16 makes frame *timing* a contract rather than
+/// a diagnostic, and the field that carries the difference is [`StreamStats::gap_events`]: its
+/// own doc says one gap of sixty and sixty gaps of one are the same drop count and different
+/// failures. A reader holding `dropped 1` cannot tell a link that stalled once from a link
+/// losing every other frame, and the interval distribution beside it is what turns "1 frame
+/// never arrived" into "this link stopped for 180 ms". The `--json` half has carried all of it
+/// since D16 landed; this is the half the owner reads while tuning a camera by eye (D20).
+///
+/// Every row is a field, in the document's own order, so a reader can move between the table
+/// and the document without a translation table. The absent cases say what is absent rather
+/// than printing a zero: an interval nobody measured and a skew no caller filled in are
+/// `None` in the document precisely because reporting zeros there would claim a measurement
+/// nobody made, and a table that printed `0 µs` would make the claim the document refused to.
+fn delivery_rows(stats: &StreamStats) -> Vec<(&'static str, String)> {
+    let mut rows = vec![
+        ("delivered", stats.frames_delivered.to_string()),
+        ("gap runs", stats.gap_events.to_string()),
+        ("sequence resets", stats.sequence_resets.to_string()),
+        ("clock reversals", stats.clock_reversals.to_string()),
+    ];
+    match &stats.intervals {
+        Some(intervals) => rows.extend(interval_rows(intervals)),
+        None => rows.push((
+            "frame intervals",
+            "not measured (fewer than two usable frames)".to_owned(),
+        )),
+    }
+    rows.push((
+        "wall clock skew",
+        match stats.wall_clock_skew_us {
+            Some(skew) => format!("{skew} µs"),
+            None => "not measured (no caller clock)".to_owned(),
+        },
+    ));
+    rows
+}
+
+/// The interval distribution, one row per field.
+///
+/// Split from [`delivery_rows`] so that the whole of [`IntervalStats`] is destructured in one
+/// expression: these eight numbers are the ones an operator ranks a link by, and a ninth added
+/// to the document would otherwise join the `--json` half alone.
+fn interval_rows(intervals: &IntervalStats) -> Vec<(&'static str, String)> {
+    let IntervalStats {
+        observed,
+        retained,
+        mean_us,
+        min_us,
+        max_us,
+        p50_us,
+        p99_us,
+        jitter_us,
+    } = intervals;
+    vec![
+        ("intervals observed", observed.to_string()),
+        ("intervals retained", retained.to_string()),
+        ("interval mean", format!("{mean_us} µs")),
+        ("interval min", format!("{min_us} µs")),
+        ("interval max", format!("{max_us} µs")),
+        ("interval p50", format!("{p50_us} µs")),
+        ("interval p99", format!("{p99_us} µs")),
+        ("interval jitter", format!("{jitter_us} µs")),
+    ]
 }
 
 /// Why a recording stopped, as a phrase.
@@ -1969,6 +2048,297 @@ pub(crate) mod tests {
             nodes,
             backend: BackendKind::V4l2,
         }
+    }
+
+    /// A take with a distinct number in every field of the document.
+    ///
+    /// Distinct on purpose: the walk below asserts each value *reaches the table*, and two
+    /// fields sharing a value would let one of them go missing under the other's row.
+    fn take_report() -> RecordReport {
+        RecordReport {
+            camera: CameraId::parse("cam:test").expect("a literal id"),
+            started_at: schema::time::Stamp::epoch(),
+            path: "/tmp/take-7311.avi".into(),
+            format: schema::video::VideoFormat::Avi,
+            negotiated: schema::capture::NegotiatedStream {
+                pixel_format: PixelFormat::MJPG,
+                width: 641,
+                height: 481,
+                bytes_per_line: 0,
+                size_image: 4_096,
+                interval: schema::camera::FrameInterval::Discrete {
+                    numerator: 1,
+                    denominator: 30,
+                },
+                adjustments: Vec::new(),
+            },
+            summary: schema::video::RecordingSummary {
+                frames_written: 271,
+                bytes_written: 8_311_002,
+                declared_interval_us: 33_331,
+                interval_source: IntervalSource::Measured,
+                span_us: Some(16_190_003),
+                dropped_frames: 3,
+                cap_reached: None,
+            },
+            stats: StreamStats {
+                frames_delivered: 274,
+                frames_dropped: 3,
+                gap_events: 2,
+                sequence_resets: 5,
+                clock_reversals: 7,
+                intervals: Some(IntervalStats {
+                    observed: 273,
+                    retained: 269,
+                    mean_us: 60_001,
+                    min_us: 47_990,
+                    max_us: 180_008,
+                    p50_us: 51_985,
+                    p99_us: 180_007,
+                    jitter_us: 18_462,
+                }),
+                wall_clock_skew_us: Some(35_980),
+            },
+            wall_clock_ms: 16_211,
+            ended: RecordingEnd::Duration,
+        }
+    }
+
+    fn recorded(report: &RecordReport) -> (String, String) {
+        let (mut out, stdout, stderr) = captured();
+        record(report, false, &mut out).expect("the table renders");
+        (stdout.text(), stderr.text())
+    }
+
+    /// The value in the row whose field cell is `field`, and a failure naming the field when
+    /// there is not exactly one such row.
+    ///
+    /// Exact rather than `table.contains(value)`, and the difference is the whole worth of the
+    /// arms below: this table carries `271`, `274` and `273` at once, so a walk asserting that
+    /// a bare `2` is somewhere in it passes with the `gap runs` row deleted — measured, on the
+    /// first draft of this reconciler. A row is a field and a value, and that is what is
+    /// asserted.
+    fn row(table: &str, field: &str) -> String {
+        let mut found: Vec<&str> = table
+            .lines()
+            .filter_map(|line| {
+                let (name, value) = line.trim().split_once("  ")?;
+                (name.trim() == field).then_some(value.trim())
+            })
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one `{field}` row in:\n{table}"
+        );
+        found.remove(0).to_owned()
+    }
+
+    #[test]
+    fn the_human_table_shows_every_field_of_the_record_document() {
+        // **The rule this module opens with, made mechanical for the verb that carries D16.**
+        // `record`'s doc says the two renderings show the same facts; until 2026-08-21 that
+        // was a sentence nothing could go red on, and it was false: `RecordReport::stats` — the
+        // gap runs, the interval distribution and the skew, whose own doc says they exist
+        // nowhere else in the document — reached the `--json` half alone, so a link that
+        // stalled for 180 ms against a 60 ms mean was `dropped 1` on the table and nothing
+        // more (note **N326**).
+        //
+        // Written as destructuring rather than as a list of expected rows, for the reason
+        // `schema::profile`'s D15 partition gives one crate over: the compiler is the only
+        // reader that reliably asks about a field nobody has thought about yet, and a tenth
+        // field on `RecordReport` or a ninth on `IntervalStats` stops this arm compiling until
+        // somebody has put it on the table or said here why it is not there.
+        let report = take_report();
+        let (table, _) = recorded(&report);
+
+        let RecordReport {
+            camera,
+            started_at,
+            path,
+            format,
+            negotiated,
+            summary,
+            stats,
+            wall_clock_ms,
+            ended,
+        } = &report;
+        let schema::video::RecordingSummary {
+            frames_written,
+            bytes_written,
+            declared_interval_us,
+            interval_source,
+            span_us,
+            dropped_frames,
+            cap_reached,
+        } = summary;
+        let StreamStats {
+            frames_delivered,
+            frames_dropped,
+            gap_events,
+            sequence_resets,
+            clock_reversals,
+            intervals,
+            wall_clock_skew_us,
+        } = stats;
+        let intervals = intervals.as_ref().expect("this fixture measured intervals");
+        let IntervalStats {
+            observed,
+            retained,
+            mean_us,
+            min_us,
+            max_us,
+            p50_us,
+            p99_us,
+            jitter_us,
+        } = intervals;
+
+        // Every field whose row *is* the field, asserted cell for cell.
+        for (field, expected) in [
+            ("camera", camera.to_string()),
+            ("started at", started_at.to_string()),
+            ("file", path.to_string()),
+            ("container", format.to_string()),
+            ("ended", ended_text(*ended)),
+            ("frames", frames_written.to_string()),
+            // Two readings of one accumulator, which `RecordReport::stats`' own doc says
+            // cannot disagree — so this one row answers for both of them, and the arm asserts
+            // that they still agree rather than assuming it.
+            ("dropped", dropped_frames.to_string()),
+            ("bytes", bytes_written.to_string()),
+            ("wall clock", format!("{wall_clock_ms} ms")),
+            ("delivered", frames_delivered.to_string()),
+            ("gap runs", gap_events.to_string()),
+            ("sequence resets", sequence_resets.to_string()),
+            ("clock reversals", clock_reversals.to_string()),
+            ("intervals observed", observed.to_string()),
+            ("intervals retained", retained.to_string()),
+            ("interval mean", format!("{mean_us} µs")),
+            ("interval min", format!("{min_us} µs")),
+            ("interval max", format!("{max_us} µs")),
+            ("interval p50", format!("{p50_us} µs")),
+            ("interval p99", format!("{p99_us} µs")),
+            ("interval jitter", format!("{jitter_us} µs")),
+            (
+                "wall clock skew",
+                format!(
+                    "{} µs",
+                    wall_clock_skew_us.expect("this fixture has a caller clock")
+                ),
+            ),
+        ] {
+            assert_eq!(row(&table, field), expected, "in:\n{table}");
+        }
+        assert_eq!(
+            *frames_dropped, *dropped_frames,
+            "the two readings of one accumulator disagreed, so one row cannot answer for both"
+        );
+
+        // The four fields whose row is *computed*, asserted inside the row they are computed
+        // into rather than anywhere on the table — and against the schema's own subtraction
+        // rather than this renderer's, which is the exception `record`'s doc names.
+        assert!(
+            row(&table, "stream").contains(&format!("{}x{}", negotiated.width, negotiated.height)),
+            "in:\n{table}"
+        );
+        assert!(
+            row(&table, "declared rate").contains(&declared_interval_us.to_string()),
+            "in:\n{table}"
+        );
+        assert_eq!(
+            *interval_source,
+            IntervalSource::Measured,
+            "this fixture's rate rows are the measured ones"
+        );
+        assert!(span_us.is_some(), "and a measured rate needs its span");
+        assert!(
+            row(&table, "measured rate").contains(
+                &summary
+                    .measured_interval_us()
+                    .expect("a take of 271 frames over a span has a mean")
+                    .to_string()
+            ),
+            "in:\n{table}"
+        );
+
+        // The one field of the document that is not a row: a cap is a *note* on standard
+        // error, because it explains the take rather than describing it. The arm below is that
+        // half, and this assertion is what says which of the two this fixture is.
+        assert!(cap_reached.is_none(), "this fixture ended on its duration");
+    }
+
+    #[test]
+    fn a_capped_take_says_which_cap_ended_it_beside_the_table_rather_than_on_it() {
+        // `RecordingSummary::cap_reached` is the field of the document that is not a row, and
+        // it is not a row because it *explains* the take rather than describing it — which is
+        // this module's split between the answer and the notes beside it. Driven over
+        // `CapReached::ALL`, so a fourth cap joins the sentence by existing rather than by
+        // somebody remembering, and asserted on the stream it goes to: a note that had drifted
+        // onto standard output would be a line in the middle of a table for a caller who
+        // redirected one of the two.
+        let mut exercised = 0;
+        for cap in schema::video::CapReached::ALL {
+            let mut report = take_report();
+            report.summary.cap_reached = Some(*cap);
+            let (table, notes) = recorded(&report);
+            let named = format!("{cap:?}").to_lowercase();
+            assert!(
+                notes.contains(&named) && notes.contains("cap ended this recording"),
+                "the {cap:?} cap is not named beside the table:\n{notes}"
+            );
+            assert!(
+                !table.contains("cap ended this recording"),
+                "the note reached the answer's own stream:\n{table}"
+            );
+            exercised += 1;
+        }
+        assert_eq!(exercised, schema::video::CapReached::ALL.len());
+        // And the inverse, which is what keeps the arm from passing on a build that printed
+        // the note unconditionally: the take that ended on its duration says nothing.
+        let (_, notes) = recorded(&take_report());
+        assert!(
+            !notes.contains("cap ended this recording"),
+            "a take that ended on its duration was given a cap note:\n{notes}"
+        );
+    }
+
+    #[test]
+    fn a_take_that_measured_no_intervals_says_so_rather_than_printing_zeros() {
+        // The other direction of the rows above, and the reason they are not eight zeros: a
+        // take of fewer than two usable frames spans no interval at all, and `IntervalStats`
+        // is `None` in the document *because* reporting zeros there would claim a measurement
+        // nobody made. A table that printed `0 µs` would make the claim the document refused
+        // to — the conversion AGENTS rule 7 is about, one instrument over.
+        let mut report = take_report();
+        report.stats.intervals = None;
+        report.stats.wall_clock_skew_us = None;
+        let (table, _) = recorded(&report);
+        for absent in [
+            "interval mean",
+            "interval p99",
+            "interval jitter",
+            "intervals observed",
+            "intervals retained",
+            "interval min",
+            "interval max",
+            "interval p50",
+        ] {
+            assert!(
+                !table.contains(absent),
+                "{absent} is on the table of a take that measured no intervals:\n{table}"
+            );
+        }
+        assert_eq!(
+            row(&table, "frame intervals"),
+            "not measured (fewer than two usable frames)"
+        );
+        assert_eq!(
+            row(&table, "wall clock skew"),
+            "not measured (no caller clock)"
+        );
+        // And the fields that are still measurements are still there, so this arm cannot pass
+        // by rendering nothing at all.
+        assert_eq!(row(&table, "gap runs"), "2");
     }
 
     #[test]

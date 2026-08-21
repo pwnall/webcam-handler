@@ -22,8 +22,6 @@
 //!   belongs to the policy, not to `DQBUF`.
 
 use std::cell::Cell;
-#[cfg(test)]
-use std::time::Duration;
 use std::time::Instant;
 
 use schema::capture::{SettlePolicy, SettleSpec};
@@ -298,6 +296,8 @@ impl SettlePolicyState {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use schema::ErrorKind;
 

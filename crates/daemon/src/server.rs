@@ -938,8 +938,8 @@ impl Wchd {
         }
     }
 
-    /// Resolve a caller-supplied selector — D1's ids and prefixes, D14's four other
-    /// spellings — against a live enumeration.
+    /// Resolve a caller-supplied selector — D1's ids and prefixes, D14's other spellings —
+    /// against a live enumeration.
     ///
     /// The rule is `engine::resolve::camera`'s, which is what stops `webcam-handler-cli` and
     /// `webcam-handler-daemon` disagreeing about what a prefix means. Enumeration is live
@@ -4206,7 +4206,7 @@ mod tests {
             "the take stopped being reported the moment its camera stopped enumerating"
         );
         // **And the fallback is id-only**, said here because it is a decision rather than an
-        // omission: the four D14 spellings are filters over the live listing, and an unplugged
+        // omission: D14's other spellings are filters over the live listing, and an unplugged
         // camera is not in it — so there is nothing to filter, and this daemon does not grow a
         // second resolver that matches a bus path against the id a take was started under. A
         // caller that addressed the take that way collects it by the id `record_start`

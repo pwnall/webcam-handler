@@ -190,16 +190,17 @@ fn assemble(
 ///
 /// # Errors
 ///
-/// [`schema::Error::StorageIo`] naming the path when it cannot be read, is not JSON, carries
-/// no `schema_version`, or does not deserialize; and [`schema::Error::SchemaVersionForeign`]
+/// [`schema::Error::StorageIo`] naming the path when it cannot be read, is larger than
+/// [`schema::limits::MAX_PROFILE_FILE_BYTES`], is not JSON, carries no `schema_version`, or
+/// does not deserialize; and [`schema::Error::SchemaVersionForeign`]
 /// for a version this build does not speak (D9's doctrine, applied to the corpus: a foreign
 /// document is a typed refusal, never a best-effort parse).
 pub fn read(path: &camino::Utf8Path) -> Result<DeviceProfile> {
-    let bytes = std::fs::read(path).map_err(|error| schema::Error::StorageIo {
-        path: path.to_owned(),
-        errno: error.raw_os_error(),
-        message: error.to_string(),
-    })?;
+    let bytes = schema::file::read_under_budget(
+        path,
+        schema::limits::MAX_PROFILE_FILE_BYTES,
+        "device profile",
+    )?;
     let unreadable = |message: String| schema::Error::StorageIo {
         path: path.to_owned(),
         errno: None,
@@ -581,6 +582,57 @@ mod tests {
         let err = read(&versionless).expect_err("no schema_version");
         assert_eq!(err.kind(), schema::ErrorKind::StorageIo);
         assert!(err.to_string().contains("schema_version"), "{err}");
+    }
+
+    #[test]
+    fn a_profile_file_past_this_builds_budget_is_refused_before_it_is_read_whole() {
+        // **The fourth door, and the one no crate above it can reach.** This function is the
+        // corpus door a `--backend fake` composition root goes through and the daemon's own
+        // `--profile`, so a path off either command line reaches an allocator here — measured
+        // through the shipped binary while this door was still open: `--backend fake --profile
+        // BIG list` on a 3 GiB sparse file, under a memory ceiling below its size, was killed
+        // at exit 137 with zero bytes on standard output and zero on standard error, which is
+        // the one failure shape the `--json` ruling forbids (notes **N127**, **N128**,
+        // **N329**). The reading is [`schema::file::read_under_budget`]'s, shared with
+        // `cli_core`'s three doors; what this arm holds is that this door goes through it.
+        //
+        // Sparse, for the reason `cli_core`'s twin gives: what is under test is the number the
+        // file system reports, and writing sixty-four mebibytes to prove none of them is
+        // allocated would be paying for the answer twice.
+        let dir = crate::paths::scratch_dir().expect("a scratch directory");
+        let path = camino::Utf8PathBuf::from_path_buf(dir.path().join("huge.json"))
+            .expect("a UTF-8 scratch path");
+        std::fs::File::create(&path)
+            .expect("creates the fixture")
+            .set_len(limits::MAX_PROFILE_FILE_BYTES + 1)
+            .expect("a sparse file one byte past the budget");
+        let err = read(&path).expect_err(
+            "a profile past this build's budget was read rather than refused, so what happens \
+             next is whatever the allocator does",
+        );
+        assert_eq!(err.kind(), schema::ErrorKind::StorageIo);
+        let text = err.to_string();
+        assert!(
+            text.contains(&(limits::MAX_PROFILE_FILE_BYTES + 1).to_string())
+                && text.contains(&limits::MAX_PROFILE_FILE_BYTES.to_string()),
+            "the refusal says what the file is and what this build will spend: {text}"
+        );
+    }
+
+    #[test]
+    fn a_profile_file_with_no_end_is_refused_by_the_read_rather_than_by_its_reported_length() {
+        // The class rather than one spelling of it (note **N249**): `st_size` is the readable
+        // length of a regular file and of nothing else, so a bound read off `stat(2)` alone
+        // passes at zero on a character device and the read behind it never ends.
+        // [`schema::file`]'s own arms hold the mechanism; this one holds that *this* door
+        // inherits it, because the door is what the daemon's `--profile` hands a path to.
+        let err = read(camino::Utf8Path::new("/dev/zero"))
+            .expect_err("a file with no end must be refused rather than read");
+        assert_eq!(err.kind(), schema::ErrorKind::StorageIo);
+        assert!(
+            err.to_string().contains("reads past this build's budget"),
+            "the refusal must be the read's and not the file system's: {err}"
+        );
     }
 
     #[test]

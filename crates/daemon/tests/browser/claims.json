@@ -135,9 +135,9 @@
       "what": "the Playwright package and the Chromium build that ran are the pinned ones"
     },
     {
-      "title": "the preview and the control being adjusted are visible together at every scroll position",
+      "title": "the preview stays put and a control card is whole on screen at every scroll position",
       "assertions": 25,
-      "what": "D20 — the workbench's layout requirement, at the rung's pinned viewport over the 77-control profile: the document does not scroll, the control column does, and the preview's box does not move at any scroll position of it"
+      "what": "D20 — the layout half of the workbench requirement, at the rung's pinned viewport over the 77-control profile: the document does not scroll, the control column does, the preview's box does not move at any scroll position of it, and a control card is wholly on screen at each. The other half of D20's sentence — that the control being *adjusted* is visible there — is asserted nowhere at a scroll position, because it is not true of this fixture: `vivid`'s run of ten unwritable compound cards is taller than the pinned viewport, measured at 0 writable cards at one of nine sampled positions (note **N333**)"
     },
     {
       "title": "a narrow viewport stacks the shell and keeps the preview at the top",
@@ -198,6 +198,41 @@
       "title": "a refusal about a session nobody is looking at is not painted in red over a current line",
       "assertions": 9,
       "what": "N283 — the louder half of M32's fourth element: a held `wch_calibrate_status` refusal released after a camera switch changes nothing on screen (N154, N156)"
+    },
+    {
+      "title": "a photo answer in flight is not painted under the next camera's card",
+      "assertions": 13,
+      "what": "docs/11 M32's fifth element (N310) — a held wch_photo answer released after a camera switch paints neither the picture nor the report, with the same held answer painted as the positive control"
+    },
+    {
+      "title": "a photo refused for a camera nobody is looking at writes nothing under the next one",
+      "assertions": 10,
+      "what": "N310's louder half — a held D13 `busy` released after a camera switch leaves #photo-status empty and uncoloured, beside the same refusal rendered on the camera it is about"
+    },
+    {
+      "title": "a call still on the wire when the socket dies does not rewrite the page's last sentence",
+      "assertions": 11,
+      "what": "N311 — app.js's ownership rule at its two unguarded writers: a held wch_list and a held wch_subscribe_events, each rejected by the close, leave #connection reading the closed-socket sentence; the live-socket refusal is the positive control"
+    },
+    {
+      "title": "a compound control shows the bytes the device reported and offers nothing to write",
+      "assertions": 11,
+      "what": "N312 — N135's law reaches the client: over the 77-control profile a HAS_PAYLOAD control renders its bytes and offers no writable field, while a plain scalar of the same declared type keeps its slider"
+    },
+    {
+      "title": "a camera switch takes the sentence about the session with it",
+      "assertions": 11,
+      "what": "N314 — `watching()` drops the sentence about the session it is dropping, words and colour, so no line claims a session the flow no longer holds"
+    },
+    {
+      "title": "a double-click on Start is one session, and the page says so once",
+      "assertions": 8,
+      "what": "N314 — N279's class in the sibling button, fenced in run(): one gesture is one wch_calibrate_start, one sentence, and no session_conflict about the session the page just created"
+    },
+    {
+      "title": "the pane comes back when the sweep's ending does not, on the bound the page declares",
+      "assertions": 10,
+      "what": "N313 — SWEEP_ENDING_WAIT_MS driven from the side nothing drove: with the sweep's terminal event held on the wire, the pane is handed back on the bound rather than never"
     }
   ]
 }

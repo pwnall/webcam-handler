@@ -42,11 +42,11 @@ pub fn list(backend: &dyn CameraBackend) -> Result<CameraList> {
     })
 }
 
-/// Find the camera `requested` names, in whichever of D14's five spellings it was written.
+/// Find the camera `requested` names, in whichever of D14's spellings it was written.
 ///
 /// An id resolves as it always has: the `cam:` prefix is optional on input, an exact match
 /// always beats being a prefix of something longer, and an ambiguous prefix names its
-/// candidates rather than picking one. The four spellings v3 adds are filters over the same
+/// candidates rather than picking one. The spellings v3 adds are filters over the same
 /// live listing — a node path against **any** of a camera's nodes, a bus path and a USB id
 /// and a serial against the fingerprint — and they answer with the same two failures,
 /// because "resolved to nothing" and "resolved to more than one" is all resolution has ever
@@ -243,7 +243,7 @@ mod tests {
         ));
     }
 
-    // ------------------------------------------------------------------ D14's four others
+    // ---------------------------------------------------------------- D14's other spellings
 
     /// A machine shaped like the seed hardware: a Chicony whose two logical cameras share
     /// one USB id \[PF:13\] and report the same untrustworthy serial \[PF:8\], and an

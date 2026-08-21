@@ -37,7 +37,10 @@
 //! One [`crate::capture::grab`] per sample, measured and written. Two captures would be
 //! two moments — a sensor drifts, a scene moves — and a sample whose numbers and whose
 //! picture come from different frames is a measurement of nothing in particular. That is
-//! why [`crate::photo::from_capture`] exists.
+//! why `crate::photo::from_capture` exists — `pub(crate)`, because it is the pipeline the
+//! facade runs around an embedder's destination rather than a seam D18 promoted, and a
+//! **Yes**-column module whose signature demands a [`crate::capture::Capture`] would be
+//! asking a caller to hold a **No**-column one (note **N324**).
 //!
 //! ## Metrics rank; they do not decide
 //!

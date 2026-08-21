@@ -385,14 +385,35 @@
 #                                  the CLI executor already made, in the same order. This is
 #                                  `xtask/`'s argument one line up rather than `engine`'s shell
 #                                  argument — what the floor would buy here is bought twice over
-#                                  and more strictly already. `cli-parity.sh` and
-#                                  `binary(facade_equivalence)` pin its answers byte for byte
-#                                  against the direct CLI, and `facade-is-the-composition.sh`
-#                                  holds which engine modules it may name in either direction, so
-#                                  a change to what it composes is red before a mutant could ask
-#                                  — including the changes nobody thought of. **19 mutants**, and
-#                                  they are cheap; the disposition is a judgement about what
-#                                  already holds the file and not about the price.
+#                                  and more strictly already. **Re-decided 2026-08-21 with the
+#                                  measurement** (note **N327**): the first wording named
+#                                  mechanisms that do not reach a third of this surface.
+#                                  `cli-parity.sh` and `binary(facade_equivalence)` pin the
+#                                  answers of the seven read verbs the CLI drives — list, info,
+#                                  controls, controls --discover-pairs, get, snapshot, profile
+#                                  capture — and no file under `crates/cli/src` calls
+#                                  `Facade::backend` or `Facade::watch`, so neither pin can move
+#                                  a byte when those two change.
+#                                  `facade-is-the-composition.sh` prints exactly that pair on
+#                                  every run ("checked 2 facade exports no file under
+#                                  crates/cli/src calls — backend watch") and holds which engine
+#                                  modules the file may name in either direction, which is what
+#                                  makes a change to what it *composes* red before a mutant could
+#                                  ask. What holds `watch` is `facade.rs`'s own `#[cfg(test)]`
+#                                  module, landed by 962dff6 on the finding that the verb "was
+#                                  asserted nowhere though it is the verb §1.3's consumer holds"
+#                                  (note **N272**). What holds `backend` is the compiler: both
+#                                  mutants cargo-mutants lists for that pair build a
+#                                  `Box<dyn …>` out of `Default::default()`, which is E0277
+#                                  against `dyn CameraBackend` and E0790 against
+#                                  `dyn HotplugWatch` — applied by hand and compiled, not
+#                                  assumed. **19 mutants**, from `cargo mutants --list -f
+#                                  crates/engine/src/facade.rs`; the `-f` widens rather than
+#                                  narrows, since this very exclusion is what keeps them out of
+#                                  an ordinary listing, and none of the nineteen is
+#                                  `Facade::new`, which the CLI does call. They are cheap; the
+#                                  disposition is a judgement about what already holds the file
+#                                  and not about the price.
 #   crates/client/                 `remote.rs`, `transport.rs`, `lib.rs`, `main.rs` — a socket, a
 #                                  jsonrpsee client and a composition root. The same class as
 #                                  `engine`'s shell and `crates/daemon`: a survivor needs a rig

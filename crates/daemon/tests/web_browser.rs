@@ -217,9 +217,25 @@ struct Floor {
 /// be deleted with the rung staying green — the one-subscription fan-in's session filter and
 /// `refresh`'s refusal fence — which is rule 2's red-on-inverse missing from the two places the
 /// code says are load-bearing (**N283**).
+///
+/// Raised seven more by the P7e/P8d/P9d gate-close review, whose G9 lens drove this page in this
+/// browser against a live daemon and found five things it does that no arm here asked about.
+/// **A photo answer in flight** was painted under the next camera's card — docs/11 M32's fifth
+/// element, and the one painter of the five that never got the fence (note **N310**). **Two
+/// writers of `#connection`** rewrote the page's final sentence with one opening `connected`,
+/// on a connection that had ended, whenever a call was still on the wire at the close
+/// (**N311**). **The control panel** chose its widget and its `ControlValue` variant from
+/// `type.kind` and never from the descriptor's `HAS_PAYLOAD`, so three of `vivid`'s ten compound
+/// controls showed none of the bytes the device reported and offered a field whose every write
+/// was an `EINVAL` — N135's law, closed on both backends and never carried to the third surface
+/// (**N312**). **A camera switch** left `#flow-status` naming a session the flow had dropped
+/// (**N314**), and **Start** was re-entrant where its sibling was not, so one double-click ended
+/// in a red `session_conflict` about the session the page had just created (**N314** again).
+/// And `SWEEP_ENDING_WAIT_MS`, the bound the previous batch landed, was driven from neither
+/// side: every sweeping arm here resolves on the event that beats it (**N313**).
 const FLOOR: Floor = Floor {
-    claims: 37,
-    assertions: 387,
+    claims: 44,
+    assertions: 461,
 };
 
 /// Where `claims` falls short of `floor`, one sentence per shortfall. Empty is green.

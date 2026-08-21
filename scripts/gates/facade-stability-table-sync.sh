@@ -12,7 +12,7 @@
 # nothing about seven of the twenty, and no run of anything moved (note **N270**). That is a
 # paragraph, not a contract, and the difference is exactly what a reconciler makes.
 #
-# ## The five things it reconciles
+# ## The six things it reconciles
 #
 #   1. **Every module in exactly one column.** For each crate the table classifies module by
 #      module, every `pub mod` that crate declares appears in exactly one row's *What* cell.
@@ -26,8 +26,9 @@
 #   3. **Every named crate is a crate.** A *Where* cell names a package under `crates/`, found by
 #      its own manifest rather than by a path this script believes.
 #   4. **The facade's public surface never forces a module the table forbids.** Every
-#      `crate::<module>` the facade's imports, its `impl Facade` `pub fn` *signatures*, or its
-#      module-scope `pub` items name must sit in a **Yes** row for `webcam-handler-engine` —
+#      `crate::<module>` the facade's imports, the *signatures* of the associated items its
+#      `impl` blocks make reachable, or its module-scope `pub` items name must sit in a **Yes**
+#      row for `webcam-handler-engine` —
 #      because a headline verb an embedder cannot call from inside the Yes column makes the
 #      column a fiction. This is the defect the review found and it is a class rather than an
 #      instance: `Facade::photo` took a `&mut dyn Destination` and answered a `Photograph`, both
@@ -35,12 +36,38 @@
 #      future verb handing back a `crate::preview::Gap` would be the same defect, and so would a
 #      free `pub fn` or a `pub type` doing it beside the impl block — `unreachable_pub` is a
 #      workspace lint, so a bare `pub` here is reachable API (note **N271**).
+#      **Reachable is the rule rather than a list of the spellings of it.** This walk carried
+#      three item keywords and entered only `impl Facade {` until 2026-08-21, so the same leak
+#      written as a `pub fn` on an inherent impl of a module-scope `pub` type passed with a
+#      counted summary byte-identical to the unseeded tree. Every `impl` block is entered now,
+#      an associated item is read when it is written `pub`, and every associated item of a
+#      **trait** impl is read whether or not it is — a trait impl makes its items as public as
+#      the trait, so there is no `pub` there to read — which is why a fourth spelling cannot
+#      arrive under this walk unseen.
 #      **An import is read through `scripts/gates/rust-imports.awk`**, the one home this suite
 #      has for joining and flattening a Rust import, so a group is the paths it carries; and an
 #      import that names this crate and yields no module at all is refused rather than allowed
 #      to shrink the population, because that is precisely how the first version of this walk
 #      failed — silently, from three modules to one, with `gate_require_nonzero` satisfied by
 #      the survivor.
+#      **A path into this crate is three prefixes**, and the walk above knew one of them for a
+#      day: `use super::preview::Gap as PreviewGap;` beside a `pub fn` handing the alias back,
+#      and the same leak written inline as `-> Option<super::preview::Gap>`, each reached an
+#      embedder from the headline surface with this run item-for-item the unseeded one (note
+#      **N328**). `super::` is rewritten to `crate::` in `rust-imports.awk` — `facade.rs` is a
+#      top-level module of its crate — and the yields-no-module refusal asks
+#      `wch_names_this_crate` rather than looking for one prefix, so `self::`, which cannot be
+#      rewritten without inventing a module, is the counted refusal instead.
+#   6. **A **Yes** module answers for everything on its own public surface.** Claim 4 asks the
+#      question of `facade.rs`; this asks it of every module a **Yes** row names, in the crates
+#      the table classifies module by module. A module an embedder may hold whose public
+#      signatures force a **No** module on them is the same fiction one file over, and it was
+#      the tree's state on the day claim 4 landed: `engine::photo` is **Yes** and `photo::take`
+#      took a `crate::actor::OpenCamera` (note **N328**). A `pub use` of the forbidden module's
+#      item is the answer rather than a violation — that re-export is what makes the type
+#      nameable from inside the Yes column, and it is the repair `photo::Gap` already carries —
+#      so what this reads is the *private* bindings a public signature then spells, plus the
+#      paths a signature spells outright.
 #   5. **The design names the table; it does not restate it.** D18's supported-composition
 #      bullet in `docs/12` argues the *rule* — what belongs in each column and why — and names
 #      this predicate as what answers which modules the rule lands on. It names no module of a
@@ -298,9 +325,20 @@ fi
 # grouped `use crate::{photo::{Destination, Photograph}, …}` is the same import as three flat
 # ones, and this predicate shipped for one revision unable to read it (note **N271**). Two
 # copies of "read a Rust import" is the second home §2.10 forbids, so there is one.
+# The backticks below are markdown in one message, not command substitution: this string is an
+# awk program and never a shell word.
+# shellcheck disable=SC2016
 facade_program='
     function emit(text, nr, what,   token, found) {
         found = 0
+        # A path into this crate is three prefixes, and this matcher knew one of them until
+        # 2026-08-21: `use super::preview::Gap as PreviewGap;` beside a `pub fn` handing the
+        # alias back, and an inline `-> Option<super::preview::Gap>`, each put a No-column type
+        # on the facades headline surface with this run byte-identical to the unseeded ones
+        # (note **N328**). `rust-imports.awk` owns the rewriting, because the sibling predicate
+        # reads the same fact out of the same file, and it is applied here rather than at the
+        # import hook alone so a signature that spells the path inline is read the same way.
+        text = wch_reroot(text)
         while (match(text, /crate::[a-z_][a-z0-9_]*/)) {
             token = substr(text, RSTART + 7, RLENGTH - 7)
             text = substr(text, RSTART + RLENGTH)
@@ -322,7 +360,7 @@ facade_program='
     # survivor (note **N271**). A count that can fall silently is not a population; this is the
     # branch that makes the fall a finding.
     function wch_emit_import(stmt, nr,   bare) {
-        if (emit(wch_flatten(stmt), nr, "import") == 0 && index(stmt, "crate::") > 0) {
+        if (emit(wch_flatten(wch_reroot(stmt)), nr, "import") == 0 && wch_names_this_crate(stmt)) {
             bare = stmt
             gsub(/\t/, " ", bare)
             gsub(/^[ ]+/, "", bare)
@@ -344,14 +382,34 @@ facade_program='
     # brace for the reason above; every other item closes when its braces balance, because its
     # fields and its associated items are the surface.
     function wch_emit_other(line, nr) {
-        if (line == "impl Facade {") { in_impl = 1; return }
-        if (in_impl && line ~ /^\}/) { in_impl = 0; return }
+        if (line ~ /^impl[[:space:]<]/) {
+            in_impl = 1
+            impl_is_trait = (line ~ /[[:space:]]for[[:space:]]/)
+            impl_what = (line == "impl Facade {") ? "impl Facade signature" : \
+                ("signature in `" substr(line, 1, length(line) - 1) "`")
+            in_sig = 0
+            return
+        }
+        if (in_impl && line ~ /^\}/) { in_impl = 0; in_sig = 0; return }
         if (in_impl) {
-            if (line ~ /^    pub fn /) { in_sig = 1; sig = ""; signr = nr }
+            # An associated item is reachable API when it is written `pub`, and in a **trait**
+            # impl when it is written at all: a trait impl makes every item as public as the
+            # trait, and there is no `pub` on them to read. So the population is every
+            # associated signature the language makes reachable, rather than a list of item
+            # keywords — which is what this walk carried until 2026-08-21, when a `pub fn` on
+            # an inherent impl of a module-scope `pub` type handed an embedder a **No**-column
+            # type with both facade gates green and a counted summary byte-identical to the
+            # unseeded one (a ban names the class and not one spelling of it, notes **N249**,
+            # **N271**).
+            if (!in_sig && (line ~ /^    pub[[:space:]]/ || (impl_is_trait && line ~ /^    [a-z]/))) {
+                in_sig = 1
+                sig = ""
+                signr = nr
+            }
             if (in_sig) {
                 sig = sig " " line
                 if (line ~ /\{[[:space:]]*$/ || line ~ /;[[:space:]]*$/) {
-                    emit(sig, signr, "impl Facade signature")
+                    emit(sig, signr, impl_what)
                     in_sig = 0
                 }
             }
@@ -407,10 +465,204 @@ while IFS=$'\t' read -r kind line module context; do
     fi
 done < <(gate_product_lines "$facade" "$facade_start" |
     awk -f "$(gate_rust_imports_awk)" -f <(printf '%s' "$facade_program"))
-gate_checked "$surface_modules" "engine modules the facade's imports, its ${tick}impl Facade${tick} signatures and its module-scope public items name — the surface an embedder cannot avoid holding"
+gate_checked "$surface_modules" "engine modules the facade's imports, the signatures of every associated item its ${tick}impl${tick} blocks make reachable, and its module-scope public items name — the surface an embedder cannot avoid holding"
 gate_require_nonzero "$surface_modules" "engine modules on the facade's own surface"
 gate_checked "$runaway_imports" "imports this reader could not find the end of, refused rather than joined into the rest of the file"
 gate_checked "$unread_imports" "imports naming this crate that yielded no module name, refused rather than allowed to shrink the population above"
+
+# --------------------------------------------------------------- claim 6, every Yes module's own
+#
+# **The same question, asked of the modules the table said yes to.** Claim 4 holds `facade.rs`'s
+# own surface to the Yes column; a module in that column is equally something an embedder holds,
+# and a `pub fn` of it that demands a **No**-column type is the same fiction one file over. It
+# was the tree's state on the day claim 4 landed: `engine::photo` is **Yes**, and `photo::take`
+# — the module's headline verb — took a `crate::actor::OpenCamera`, with `actor` in the **No**
+# row of the same table and both facade predicates green (note **N328**). The population is
+# derived the way claim 1's is, from `gate_pub_mods` filtered to the table's own Yes rows, so a
+# module that joins the column joins this walk on the day it does.
+#
+# **A `pub use` of the forbidden module's item is the answer and not the violation.** That
+# re-export is what makes the type nameable from inside the Yes column — `photo::Gap` is the
+# repair the review of 2026-08-21 asked for and got — so a name bound by a bare `pub use` binds
+# nothing here. `pub(crate) use` does bind: it is not reachable API, so it cannot be how an
+# embedder names the type.
+#
+# **Signatures, not bodies**, for claim 4's reason: `engine::discover` calls into
+# `crate::snapshot` and hands back nothing of it, which is encapsulation working. What is read is
+# every path a public signature spells outright and every local name such a signature spells that
+# an import of this crate bound — the second is the whole point, because `take`'s parameter is
+# written `OpenCamera<'_>` and names no module at all.
+#
+# What it does not claim: a module's own submodule files are not walked (the module's `.rs` is),
+# and an item re-exported under another name is read as the name the file writes. Both are claim
+# 4's residuals, in a walk that shares its reader.
+#
+# The backticks below are markdown in one message, not command substitution: this string is an
+# awk program and never a shell word.
+# shellcheck disable=SC2016
+yes_surface_program='
+    function surface(text, nr, what,   token, tok, rest) {
+        text = wch_reroot(text)
+        rest = text
+        while (match(rest, /crate::[a-z_][a-z0-9_]*/)) {
+            token = substr(rest, RSTART + 7, RLENGTH - 7)
+            rest = substr(rest, RSTART + RLENGTH)
+            print "SURF\t" nr "\t" token "\t" what
+        }
+        rest = text
+        while (match(rest, /[A-Za-z_][A-Za-z0-9_]*/)) {
+            tok = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            if (tok in binding) print "SURF\t" nr "\t" binding[tok] "\t" what
+        }
+    }
+
+    function wch_emit_import(stmt, nr,   flat, rooted, bare, rest, path, n, parts, local, took, reexport, raw, piece, ren) {
+        rooted = wch_reroot(stmt)
+        flat = wch_flatten(rooted)
+        bare = stmt
+        gsub(/\t/, " ", bare)
+        gsub(/^[ ]+/, "", bare)
+        if (match(flat, /crate::([a-z_][a-z0-9_]*::)*\*/)) {
+            print "GLOB\t" nr "\t\t" bare
+            return
+        }
+        reexport = (bare ~ /^pub[ \t]+use[ \t]/)
+        delete renamed
+        raw = rooted
+        while (match(raw, /[A-Za-z_][A-Za-z0-9_]*[ \t]+as[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+            piece = substr(raw, RSTART, RLENGTH)
+            raw = substr(raw, RSTART + RLENGTH)
+            split(piece, ren, /[ \t]+as[ \t]+/)
+            renamed[ren[1]] = ren[2]
+        }
+        wch_self_renames(rooted, renamed)
+        took = 0
+        rest = flat
+        while (match(rest, /crate::[a-z_][a-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*/)) {
+            path = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            n = split(path, parts, "::")
+            took++
+            if (reexport) continue
+            local = parts[n]
+            if (local in renamed) local = renamed[local]
+            binding[local] = parts[2]
+        }
+        if (took == 0 && wch_names_this_crate(rooted)) print "UNREAD\t" nr "\t\t" bare
+    }
+
+    function wch_emit_runaway(nr, span) { print "RUNAWAY\t" nr "\t\t" span }
+
+    function wch_emit_other(line, nr) { held++; text[held] = line; where[held] = nr }
+
+    END { for (i = 1; i <= held; i++) walk(text[i], where[i]) }
+
+    # Claim 4s walk, with `impl Facade` generalised to every `impl`: an associated item is
+    # reachable API when it is written `pub`, and in a trait impl when it is written at all.
+    function walk(line, nr) {
+        if (line ~ /^impl[[:space:]<]/) {
+            in_impl = 1
+            impl_is_trait = (line ~ /[[:space:]]for[[:space:]]/)
+            impl_what = "signature in `" substr(line, 1, length(line) - 1) "`"
+            in_sig = 0
+            return
+        }
+        if (in_impl && line ~ /^\}/) { in_impl = 0; in_sig = 0; return }
+        if (in_impl) {
+            if (!in_sig && (line ~ /^    pub[[:space:]]/ || (impl_is_trait && line ~ /^    [a-z]/))) {
+                in_sig = 1
+                sig = ""
+                signr = nr
+            }
+            if (in_sig) {
+                sig = sig " " line
+                if (line ~ /\{[[:space:]]*$/ || line ~ /;[[:space:]]*$/) {
+                    surface(sig, signr, impl_what)
+                    in_sig = 0
+                }
+            }
+            return
+        }
+        if (!item_open && line ~ /^pub[[:space:]]+(fn|type|struct|enum|union|trait|const|static)[[:space:]]/) {
+            item_open = 1
+            item_is_fn = (line ~ /^pub[[:space:]]+fn[[:space:]]/)
+            item = ""
+            itemnr = nr
+            item_depth = 0
+            item_saw_brace = 0
+        }
+        if (!item_open) return
+        item = item " " line
+        item_depth += wch_braces(line) - wch_unbraces(line)
+        if (wch_braces(line) > 0) item_saw_brace = 1
+        if (item_is_fn) {
+            if (line ~ /\{[[:space:]]*$/ || line ~ /;[[:space:]]*$/) {
+                surface(item, itemnr, "module-scope pub fn signature")
+                item_open = 0
+            }
+            return
+        }
+        if (item_depth <= 0 && (item_saw_brace || line ~ /;[[:space:]]*$/)) {
+            surface(item, itemnr, "module-scope public item")
+            item_open = 0
+        }
+    }
+'
+
+yes_modules_walked=0
+yes_surface_refusals=0
+for package in "${!listed_crate[@]}"; do
+    src_dir="$(dirname "${crate_lib[$package]}")"
+    while IFS= read -r module; do
+        [[ -n "$module" ]] || continue
+        [[ "${classified_verdict["$package/$module"]:-}" == '**Yes** ' ]] || continue
+
+        module_file="$src_dir/$module.rs"
+        [[ -f "$module_file" ]] || module_file="$src_dir/$module/mod.rs"
+        if [[ ! -f "$module_file" ]]; then
+            yes_surface_refusals=$((yes_surface_refusals + 1))
+            gate_fail "$facade_rel's stability table puts ${tick}${package}${tick}'s ${tick}${module}${tick} in the **Yes** column and this reader finds neither ${tick}${src_dir#"$root"/}/$module.rs${tick} nor ${tick}${src_dir#"$root"/}/$module/mod.rs${tick} to read its surface out of; a module whose file this walk cannot find is one whose public signatures nothing checks against the table, which is the silence claim 6 exists to end — write the module to a file of its own, or point this reader at where it went, in the same commit"
+            continue
+        fi
+        module_rel="${module_file#"$root"/}"
+        module_start="$(gate_test_region_start "$module_file")"
+        if ((module_start == -1)); then
+            yes_surface_refusals=$((yes_surface_refusals + 1))
+            gate_fail "$module_rel carries more than one ${tick}#[cfg(test)]${tick} marker, or one that opens something other than a ${tick}mod${tick}, so its product half cannot be told from its test half; a signature read out of a test module would classify what the tests reach rather than what an embedder holds"
+            continue
+        fi
+        yes_modules_walked=$((yes_modules_walked + 1))
+
+        while IFS=$'\t' read -r kind line named context; do
+            case "$kind" in
+            UNREAD)
+                yes_surface_refusals=$((yes_surface_refusals + 1))
+                gate_fail "$module_rel:$line names this crate in an import — ${tick}${context}${tick} — and this reader took no module name out of it; the local names a public signature of a **Yes** module then spells are resolved through these statements, so one it cannot read is a surface it reads as clean rather than one it fails on — spell the import in a form this reader resolves, or widen ${tick}scripts/gates/rust-imports.awk${tick} in the same commit"
+                ;;
+            GLOB)
+                yes_surface_refusals=$((yes_surface_refusals + 1))
+                gate_fail "$module_rel:$line imports a whole vocabulary of this crate unqualified — ${tick}${context}${tick}; every item it brings into scope can then be written bare in a signature naming no module at all, so a **No**-column type would reach an embedder through this module with nothing here to see it — import the paths this module actually names, or repoint this predicate at a reader that resolves globs, in the same commit"
+                ;;
+            RUNAWAY)
+                yes_surface_refusals=$((yes_surface_refusals + 1))
+                gate_fail "$module_rel:$line opens an import whose braces are still open $context lines later, so this reader cannot tell where the statement ends; joining an unterminated one would read the rest of the module as one import and leave every signature below it unresolved — close the import, or raise the budget in this predicate with the reason written beside it"
+                ;;
+            SURF)
+                [[ -n "$named" ]] || continue
+                [[ "$named" != "$module" ]] || continue
+                [[ -n "${classified_count["$package/$named"]:-}" ]] || continue
+                [[ "${classified_verdict["$package/$named"]:-}" != '**Yes** ' ]] || continue
+                gate_fail "$module_rel:$line — ${tick}${package}${tick}'s ${tick}${module}${tick} is in D18's stability table's **Yes** column and its $context names ${tick}crate::${named}${tick}, which the table puts in the **No** column; an embedder holding ${tick}${module}${tick} cannot name what this signature hands it or asks of it, which makes the Yes column a fiction one module over from where claim 4 looks — re-export the item from ${tick}${module}${tick} the way ${tick}photo::Gap${tick} is, take it off the public surface, or move ${tick}${named}${tick} into the Yes column with the reason written beside it"
+                ;;
+            esac
+        done < <(gate_product_lines "$module_file" "$module_start" |
+            awk -f "$(gate_rust_imports_awk)" -f <(printf '%s' "$yes_surface_program"))
+    done < <(gate_pub_mods "${crate_lib[$package]}")
+done
+gate_checked "$yes_modules_walked" "modules in a **Yes** row of a crate the table classifies module by module, each read for the ${tick}crate::${tick} paths its own public surface forces on whoever holds it — the population is ${tick}gate_pub_mods${tick} filtered by the table, so a module that joins the column joins this walk"
+gate_require_nonzero "$yes_modules_walked" "**Yes** modules whose own surface was read"
+gate_checked "$yes_surface_refusals" "statements in those modules this reader refused rather than read past — an import it could not reduce, a glob of the crate, an import with no end, and a module with no file"
 
 # --------------------------------------------------------------- claim 5, the design's one home
 #

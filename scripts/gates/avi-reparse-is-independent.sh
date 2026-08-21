@@ -202,15 +202,50 @@ gate_note "the modules under $dir_rel are: ${stems[*]}"
 # in product code and the asymmetry is entirely in the exemption: `write.rs`'s `#[cfg(test)]`
 # half reaches for `avi::read` on purpose and must keep being allowed to.
 #
-# **What counts as naming a sibling** is the module's stem in a path position: preceded by `::`
-# or by a `use` list's `{` or `,`, or followed by `::`. That covers `use super::write::…`, `use
-# crate::avi::write;`, `use super::{write, AviParams};` and a bare `write::FOURCC_MOVI` at a call
-# site, and it deliberately does not fire on an ordinary word — `write.rs`'s product code
-# contains "already", and a rule that read the `read` inside it as a module reference would be
-# the gate that cries wolf note **N60** bills for.
+# **What counts as naming a sibling** is the module's stem in a path position: preceded or
+# followed by `::`. That covers `use super::write::…`, `use crate::avi::write;` and a bare
+# `write::FOURCC_MOVI` at a call site, and it deliberately does not fire on an ordinary word —
+# `write.rs`'s product code contains "already", and a rule that read the `read` inside it as a
+# module reference would be the gate that cries wolf note **N60** bills for.
+#
+# **An import is read as an import, through the one home this suite has for reading one.** Until
+# 2026-08-21 the matcher recognised a grouped import by its own punctuation — `[{,]` before the
+# stem — and grep is line-based, so the stem landing first on a *continuation* line was invisible:
+# `use super::{ … , \n    read,\n};`, which is what rustfmt writes whenever the fill breaks
+# there, passed with a counted summary byte-identical to the unseeded tree's, measured with
+# ordinary identifier lengths. Note **N269** had named this predicate as the house precedent the
+# facade gates had missed, and note **N271** then built `scripts/gates/rust-imports.awk` as the
+# one home and converted those two — leaving the cited precedent as the last reader with a copy
+# of the narrow rule in it. Every statement is now joined across the lines rustfmt broke it over
+# and flattened before the stem is looked for, so a group, a nest, an `as` rename, a restricted
+# visibility and an `extern crate` are the paths they carry.
+#
+# **The two refusals the facade predicates carry are not needed here, and the reason is worth
+# writing down rather than transferring.** A glob of the parent — `use super::*;` — brings the
+# sibling in under its own name, so the call site still writes `read::recover_frames(…)` and the
+# walk still sees it; a glob of the sibling itself — `use super::read::*;` — names the sibling in
+# the import and is a violation on the spot. What remains is the joiner's own bound: an import
+# whose braces never close is a statement this reader cannot find the end of, and that is refused
+# below rather than joined into the rest of the file.
+
+# The normaliser: `scripts/gates/rust-imports.awk` carries the joiner, the flattener and the
+# dispatch, and this program is the hooks it calls. An import reaches the walk below as the paths
+# it carries, on one line; every other line reaches it as itself.
+normalise_program='
+    function wch_emit_import(stmt, nr,   flat) {
+        flat = wch_flatten(stmt)
+        gsub(/\t/, " ", flat)
+        print "LINE\t" nr "\t" flat
+    }
+
+    function wch_emit_other(line, nr) { print "LINE\t" nr "\t" line }
+
+    function wch_emit_runaway(nr, span) { print "RUNAWAY\t" nr "\t" span }
+'
 
 scanned=0
 sibling_claims=0
+runaway_imports=0
 
 for index in "${!module_rels[@]}"; do
     rel="${module_rels[$index]}"
@@ -224,12 +259,21 @@ for index in "${!module_rels[@]}"; do
     fi
 
     scanned=$((scanned + 1))
-    product="$(gate_product_lines "$file" "$start")"
+    product=""
+    while IFS=$'\t' read -r kind line text; do
+        if [[ "$kind" == "RUNAWAY" ]]; then
+            runaway_imports=$((runaway_imports + 1))
+            gate_fail "$rel:$line opens an import whose braces are still open $text lines later, so this reader cannot tell where the statement ends; joining an unterminated one would swallow the rest of the file into a single logical line and the walk below would be reading one statement where the module has a hundred — close the import, or raise the budget in this predicate with the reason written beside it"
+            continue
+        fi
+        product+="$text"$'\n'
+    done < <(gate_product_lines "$file" "$start" |
+        awk -f "$(gate_rust_imports_awk)" -f <(printf '%s' "$normalise_program"))
 
     for sibling in "${stems[@]}"; do
         [[ "$sibling" != "$stem" ]] || continue
         sibling_claims=$((sibling_claims + 1))
-        if grep -Eq -- "(::|[{,][[:space:]]*)${sibling}\b|\b${sibling}::" <<<"$product"; then
+        if grep -Eq -- "::${sibling}\b|\b${sibling}::" <<<"$product"; then
             gate_fail "$rel names its sibling module \`$sibling\` in product code; the modules under $dir_rel are one byte layout derived twice on purpose, and a re-parse assembled from the muxer's own layout helpers agrees with the muxer by construction — it can catch a typo, it cannot catch two halves of one wrong idea agreeing with each other (docs/7 P6a, $parent_rel's module doc). A \`#[cfg(test)]\` half may reach across and the muxer's does; product code may not"
         fi
     done
@@ -237,7 +281,8 @@ done
 
 gate_checked "$scanned" "module(s) whose product half was read for a reference to a sibling implementation"
 gate_require_nonzero "$scanned" "modules with a readable product/test boundary"
-gate_checked "$sibling_claims" "ordered pair(s) of modules checked for a product-code reference from one to the other"
+gate_checked "$sibling_claims" "ordered pair(s) of modules checked for a product-code reference from one to the other, each import joined and flattened through \`scripts/gates/rust-imports.awk\` before the stem was looked for"
+gate_checked "$runaway_imports" "imports this reader could not find the end of, refused rather than joined into the rest of the module"
 # With the pair intact this is two. A zero means the walk read nothing, which is the vacuous
 # green everything above is arranged to prevent rather than a tree with no coupling in it.
 gate_require_nonzero "$sibling_claims" "ordered pairs of modules"

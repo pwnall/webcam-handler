@@ -30,10 +30,35 @@
 #
 # Nothing is transcribed. `crates/engine/src/facade.rs` is read for the `pub fn`s inside
 # `impl Facade { … }` — the verbs an embedder holds — and, inside **every** method of that block,
-# for the engine modules it calls into (`crate::<module>::<function>(`). That set is what the
-# facade **encapsulates**: the modules a caller no longer has to name because the facade names
-# them. A module renamed, a verb added, a verb whose assembly grows a sixth call — each moves
-# this population on the day it lands, which a list written into this script would not.
+# for the engine modules it calls into. That set is what the facade **encapsulates**: the modules
+# a caller no longer has to name because the facade names them. A module renamed, a verb added, a
+# verb whose assembly grows a sixth call — each moves this population on the day it lands, which
+# a list written into this script would not.
+#
+# **A call is a call whatever the file imported.** `crate::resolve::list(…)`, `resolve::list(…)`
+# after `use crate::resolve;`, `list(…)` after `use crate::resolve::list;`, and each of those
+# under an `as` rename, are one composition move spelled four ways — so the file's own imports
+# are read first, through the same one home the walk below uses (`scripts/gates/rust-imports.awk`),
+# and the local names they bind are what the body walk resolves calls through. Until 2026-08-21
+# only the fully-spelled form was read, and the consequence was measured: adding `use
+# crate::resolve;` and dropping two `crate::` prefixes took `resolve` out of the encapsulated set
+# with the run printing a smaller number, no sentence and exit 0 — after which the executor could
+# assemble `engine::resolve::list` by hand and pass. That is note **N271**'s
+# shrink-rather-than-fail shape, closed on the sibling predicate in the same commit that left it
+# open here, so an import this reader cannot take a module out of — a glob of the crate, or a
+# statement it cannot reduce to a path — is a counted refusal below rather than a smaller number.
+#
+# **And a path into this crate is three prefixes, not one.** The repair above resolved calls
+# through the names an import binds and then asked whether the statement said `crate::`, which
+# left `use super::resolve;` and `use crate::resolve::{self as r};` neither resolved nor refused:
+# each took the encapsulated set from seven modules to six, printed the smaller number, named no
+# sentence, exited 0, and passed a hand-assembled `engine::resolve::list(…)` in the executor on
+# the next run — the same measurement, one spelling along, on the day the first one was closed
+# (note **N328**). `super::` is rewritten to `crate::` in `rust-imports.awk` because this file is
+# a top-level module of its crate; `self::` is not, because inside module `m` it names
+# `crate::m::` and rewriting it would invent a module; and the refusal below asks
+# `wch_names_this_crate` rather than looking for one prefix, so a statement this reader still
+# cannot reduce is the counted refusal this paragraph promises rather than a quieter number.
 #
 # **Every method and not only the exported ones**, because a verb's assembly is not confined to
 # its own body: a private helper the verb calls is still the facade naming the module, and a
@@ -155,12 +180,17 @@
 #     one. Byte equivalence with the executor this replaced is
 #     `crates/cli/tests/facade_equivalence.rs` (a one-time criterion, docs/13 P7d), and
 #     `cli-parity.sh` is what owns the answers from here on.
-#   * **A facade export the CLI never reaches is a note, not a violation.** `watch`, `open_id`
-#     and `backend` exist for embedders — the FR's consumer holds a hotplug watch; this binary
-#     runs one verb and exits — so requiring the CLI to exercise the whole surface would be
-#     requiring the CLI to grow verbs nobody asked for. What the notes buy is that the gap is
-#     *visible* in the output, which is where the next person deciding whether an export earns
-#     its place will look.
+#   * **A facade export the CLI never reaches is a note, not a violation.** Some of this surface
+#     exists for embedders — the FR's consumer holds a hotplug watch; this binary runs one verb
+#     and exits — so requiring the CLI to exercise the whole surface would be requiring the CLI
+#     to grow verbs nobody asked for. What the notes buy is that the gap is *visible* in the
+#     output, which is where the next person deciding whether an export earns its place will
+#     look. **Which exports they are is the run's own answer and is not written here**: the list
+#     was written out in this sentence until 2026-08-21 and differed from the computed one by a
+#     name in each direction — the sentence named an export the CLI reaches, and the run named
+#     one it calls under the other spelling — which is the second hand-written home of a derived
+#     list that claim 4 of this same predicate exists to keep collapsed (notes **N153**,
+#     **N269**).
 #   * **It cannot tell an executor verb from a helper in the same crate.** The population is
 #     every product line under `crates/cli/src`, which is stricter than "the executor" and
 #     deliberately so: a helper function that did the engine assembly and handed the result to a
@@ -274,10 +304,147 @@ facade_verbs=()
 declare -A encapsulates=()
 declare -A encapsulated_by=()
 saw_impl=0
+facade_imports=0
+facade_unread_imports=0
+facade_globs=0
+
+# The facade's own program, function definitions and one `END` only:
+# `scripts/gates/rust-imports.awk` in front of it carries the joiner, the flattener and the
+# dispatch, because "which paths does this file name" is a fact three predicates here read and a
+# second copy of the reader is the second home §2.10 forbids (notes **N269**, **N271**).
+#
+# **The `END` is what makes the bindings arrive before the calls that use them.** The body lines
+# are held and walked after the last statement has been read, so an import written below a method
+# still decides how that method's calls are resolved; a reader that walked in file order would
+# answer differently depending on where the import sat, which is a population that moves for a
+# reason nobody can see.
+#
+# The backticks below are markdown in awk comments and in one message, not command
+# substitution: this string is an awk program and never a shell word.
+# shellcheck disable=SC2016
+facade_program='
+    # An import of this crate is read for the local names its methods may then call the engine
+    # by. A call is a call whatever the statement above it looks like: `crate::resolve::list(`,
+    # `resolve::list(` after `use crate::resolve;`, `list(` after `use crate::resolve::list;`,
+    # and every one of those under an `as` rename. Until 2026-08-21 only the first spelling was
+    # read, so moving one import line took a module out of the encapsulated set with the run
+    # printing a smaller number and no sentence at all — the shrink note **N271** closed on the
+    # sibling predicate and not here (the executor could then assemble that very module by hand
+    # and pass).
+    #
+    # The rename map is read from the statement **as written**, because the flattener strips
+    # `as X` after rebuilding the path — which is what makes the module visible, and what loses
+    # the name the file will actually write at the call site.
+    function wch_emit_import(stmt, nr,   flat, bare, rooted, rest, path, n, parts, local, took, raw, piece, ren) {
+        print "USE\t" nr "\t"
+        bare = stmt
+        gsub(/\t/, " ", bare)
+        gsub(/^[ ]+/, "", bare)
+        # `super::resolve` is `crate::resolve` here — `facade.rs` is a top-level module of its
+        # crate — and the two spellings become one in `rust-imports.awk` rather than in this
+        # matcher, because the sibling predicate reads the same fact out of the same file.
+        rooted = wch_reroot(stmt)
+        flat = wch_flatten(rooted)
+        if (match(flat, /crate::([a-z_][a-z0-9_]*::)*\*/)) {
+            print "GLOB\t" nr "\t" bare
+            return
+        }
+        delete renamed
+        raw = rooted
+        while (match(raw, /[A-Za-z_][A-Za-z0-9_]*[ \t]+as[ \t]+[A-Za-z_][A-Za-z0-9_]*/)) {
+            piece = substr(raw, RSTART, RLENGTH)
+            raw = substr(raw, RSTART + RLENGTH)
+            split(piece, ren, /[ \t]+as[ \t]+/)
+            renamed[ren[1]] = ren[2]
+        }
+        # And the one rename that loop cannot see: the last segment of `crate::resolve::{self as
+        # r}` is `resolve`, so a map keyed on the item name binds nothing while the file calls
+        # the module `r` (note **N328**).
+        wch_self_renames(rooted, renamed)
+        took = 0
+        rest = flat
+        while (match(rest, /crate::[a-z_][a-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*/)) {
+            path = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            n = split(path, parts, "::")
+            took++
+            local = parts[n]
+            if (local in renamed) local = renamed[local]
+            if (n == 2) { mod_binding[local] = parts[2]; continue }
+            # A type is the *surface* rather than the composition, and the two halves of this
+            # file are owned by two predicates: `facade-stability-table-sync.sh` reads what a
+            # signature hands an embedder, this reads what a body calls. A capitalised item is
+            # therefore not a binding here, which is the same line the fully-spelled matcher
+            # below has always drawn.
+            if (local ~ /^[a-z_]/) fn_binding[local] = parts[2]
+        }
+        if (took == 0 && wch_names_this_crate(rooted)) print "UNREAD\t" nr "\t" bare
+    }
+
+    function wch_emit_runaway(nr, span) { print "RUNAWAY\t" nr "\t" span }
+
+    function wch_emit_other(line, nr) { held++; text[held] = line }
+
+    END { for (i = 1; i <= held; i++) walk(text[i]) }
+
+    # Every method, not only the exported ones. The **verbs** are the `pub fn`s — that is the
+    # surface an embedder holds — but what a verb *composes* is not confined to its own body: a
+    # private helper the verb calls is still the facade naming the module, and a walk that read
+    # only `pub fn` bodies would let an assembly move one line down and quietly leave the
+    # encapsulated population (note **N271**). `Facade::context` already reaches
+    # `crate::profile::kernel_release` from exactly there.
+    function walk(line,   frag, rest, token, tok, p) {
+        if (line == "impl Facade {") { in_impl = 1; print "IMPL\t\t"; return }
+        if (in_impl && line ~ /^\}/) { in_impl = 0; return }
+        if (!in_impl) return
+        if (match(line, /^    (pub[[:space:]]+)?fn [a-z_][A-Za-z0-9_]*/)) {
+            frag = substr(line, RSTART, RLENGTH)
+            sub(/^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+/, "", frag)
+            verb = frag
+            if (line ~ /^    pub fn /) print "VERB\t" verb "\t"
+            in_fn = 1
+        }
+        if (!in_fn) return
+        rest = line
+        while (match(rest, /crate::[a-z_][a-z0-9_]*::[a-z_][a-z0-9_]*\(/)) {
+            token = substr(rest, RSTART + 7, RLENGTH - 7)
+            rest = substr(rest, RSTART + RLENGTH)
+            split(token, p, "::")
+            print "CALL\t" verb "\t" p[1]
+        }
+        rest = line
+        while (match(rest, /[A-Za-z_][A-Za-z0-9_]*::[a-z_][a-z0-9_]*\(/)) {
+            tok = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            split(tok, p, "::")
+            if (p[1] in mod_binding) print "CALL\t" verb "\t" mod_binding[p[1]]
+        }
+        rest = line
+        while (match(rest, /[A-Za-z_][A-Za-z0-9_]*\(/)) {
+            tok = substr(rest, RSTART, RLENGTH - 1)
+            rest = substr(rest, RSTART + RLENGTH)
+            if (tok in fn_binding) print "CALL\t" verb "\t" fn_binding[tok]
+        }
+        if (line ~ /^    \}$/) in_fn = 0
+    }
+'
+
 while IFS=$'\t' read -r kind field_a field_b; do
     case "$kind" in
     IMPL) saw_impl=1 ;;
     VERB) facade_verbs+=("$field_a") ;;
+    USE) facade_imports=$((facade_imports + 1)) ;;
+    UNREAD)
+        facade_unread_imports=$((facade_unread_imports + 1))
+        gate_fail "$facade_rel:$field_a names this crate in an import — ${tick}${field_b}${tick} — and this reader took no module name out of it; the encapsulated set below is derived from these statements and from the calls they let the methods spell, so an import it cannot read is one that silently shrinks the population rather than one that fails, and a shrunken set is a shorter list of modules the executor may assemble by hand — spell the import in a form this reader resolves, or widen ${tick}scripts/gates/rust-imports.awk${tick} in the same commit"
+        ;;
+    GLOB)
+        facade_globs=$((facade_globs + 1))
+        gate_fail "$facade_rel:$field_a imports a whole vocabulary of this crate unqualified — ${tick}${field_b}${tick}; every item it brings into scope can then be called as a bare ${tick}list(…)${tick} that names neither crate nor module, so this reader would take no module out of the call and the encapsulated set would quietly get smaller — import the paths the facade actually uses, or repoint this predicate at a reader that resolves globs, in the same commit"
+        ;;
+    RUNAWAY)
+        gate_fail "$facade_rel:$field_a opens an import whose braces are still open $field_b lines later, so this reader cannot tell where the statement ends; joining an unterminated one would swallow the rest of the module into a single logical line and read the whole file as one import, which is a worse answer than none — close the import, or raise the budget in this predicate with the reason written beside it"
+        ;;
     CALL)
         encapsulates["$field_b"]=1
         if [[ -z "${encapsulated_by[$field_b]:-}" ]]; then
@@ -285,34 +452,8 @@ while IFS=$'\t' read -r kind field_a field_b; do
         fi
         ;;
     esac
-done < <(gate_product_lines "$facade" "$facade_start" | awk '
-    $0 == "impl Facade {" { in_impl = 1; print "IMPL\t1"; next }
-    in_impl && /^\}/ { in_impl = 0; next }
-    !in_impl { next }
-    # Every method, not only the exported ones. The **verbs** are the `pub fn`s — that is the
-    # surface an embedder holds — but what a verb *composes* is not confined to its own body: a
-    # private helper the verb calls is still the facade naming the module, and a walk that read
-    # only `pub fn` bodies would let an assembly move one line down and quietly leave the
-    # encapsulated population (note **N271**). `Facade::context` already reaches
-    # `crate::profile::kernel_release` from exactly there.
-    match($0, /^    (pub[[:space:]]+)?fn [a-z_][A-Za-z0-9_]*/) {
-        frag = substr($0, RSTART, RLENGTH)
-        sub(/^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+/, "", frag)
-        verb = frag
-        if ($0 ~ /^    pub fn /) { print "VERB\t" verb }
-        in_fn = 1
-    }
-    in_fn {
-        line = $0
-        while (match(line, /crate::[a-z_][a-z0-9_]*::[a-z_][a-z0-9_]*\(/)) {
-            token = substr(line, RSTART + 7, RLENGTH - 7)
-            line = substr(line, RSTART + RLENGTH)
-            split(token, parts, "::")
-            print "CALL\t" verb "\t" parts[1]
-        }
-        if ($0 ~ /^    \}$/) { in_fn = 0 }
-    }
-')
+done < <(gate_product_lines "$facade" "$facade_start" |
+    awk -f "$(gate_rust_imports_awk)" -f <(printf '%s' "$facade_program"))
 
 if ((saw_impl == 0)); then
     gate_fail "$facade_rel declares no ${tick}impl Facade {${tick} block; the facade's exports are this predicate's population and a block renamed, made generic or wrapped in a macro leaves it reading nothing — restore the declaration in $facade_rel, or repoint this predicate, and never let the rename land alone (D18: the facade is the composition, and a composition nobody can enumerate is one nothing holds to it)"
@@ -323,6 +464,10 @@ gate_checked "${#facade_verbs[@]}" "verbs ${tick}engine::facade${tick} exports, 
 gate_require_nonzero "${#facade_verbs[@]}" "facade exports"
 gate_checked "${#encapsulates[@]}" "engine modules those verbs compose, and which the executor must therefore not name itself"
 gate_require_nonzero "${#encapsulates[@]}" "engine modules the facade encapsulates"
+gate_checked "$facade_imports" "import statements in $facade_rel's product half — every visibility, ${tick}use${tick} and ${tick}extern crate${tick} alike, joined across the lines rustfmt broke each one over and flattened before it was read for the local names the methods above call the engine by"
+gate_require_nonzero "$facade_imports" "import statements in the facade"
+gate_checked "$facade_unread_imports" "imports naming this crate that yielded no module name, refused rather than allowed to shrink the encapsulated set above"
+gate_checked "$facade_globs" "imports of a whole vocabulary of this crate, refused for the same reason: a bare ${tick}list(…)${tick} names no module for this reader to resolve it to"
 
 for module in "${!encapsulates[@]}"; do
     if [[ -z "${engine_modules[$module]:-}" ]]; then
@@ -602,9 +747,15 @@ for file in "${executor_files[@]}"; do
     ((start == -1)) && continue
     executor_calls+="$(gate_product_lines "$file" "$start" | tr -d ' \t\n')"
 done
+#
+# **Both call forms count as a reach**, because a verb is reached however the crate spells the
+# call: `self.facade.list(…)` on a value, and `Facade::new(…)` on the type. Until 2026-08-21 only
+# the first was matched, so `new` — the composition root's one construction of the facade, at
+# `crates/cli/src/main.rs:84` — was permanently in the printed list of exports the CLI never
+# reaches, which is the one thing this note is for a reader to trust.
 unreached_verbs=()
 for verb in "${facade_verbs[@]}"; do
-    if [[ "$executor_calls" != *"facade.${verb}("* ]]; then
+    if [[ "$executor_calls" != *"facade.${verb}("* && "$executor_calls" != *"Facade::${verb}("* ]]; then
         unreached_verbs+=("$verb")
     fi
 done

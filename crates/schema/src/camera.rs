@@ -283,20 +283,36 @@ impl CameraFingerprint {
     /// the common case.
     #[must_use]
     pub fn differing_fields(&self, other: &CameraFingerprint) -> Vec<&'static str> {
+        // Destructured rather than field-accessed, for the reason
+        // [`CameraInfo::differing_fields`] one type up gives and this function needed more:
+        // it is the comparator [`crate::error::Error::FingerprintMismatch`] is decided from,
+        // so a field this list ignores is a snapshot restored onto a camera the new field says
+        // is a different device — and it read all five fields through `self.` until 2026-08-21,
+        // which meant a sixth was absorbed in silence by the compiler, by the whole workspace
+        // suite and by `profile-partition-is-closed.sh`, whose own header named the ambiguity
+        // and declared a row for the neighbour (note **N323**).
+        let CameraFingerprint {
+            bus_path,
+            usb_id,
+            card,
+            driver,
+            serial,
+        } = self;
+
         let mut out = Vec::new();
-        if self.bus_path != other.bus_path {
+        if *bus_path != other.bus_path {
             out.push(Self::BUS_PATH);
         }
-        if self.usb_id != other.usb_id && self.usb_id.is_some() && other.usb_id.is_some() {
+        if *usb_id != other.usb_id && usb_id.is_some() && other.usb_id.is_some() {
             out.push("usb_id");
         }
-        if self.card != other.card {
+        if *card != other.card {
             out.push("card");
         }
-        if self.driver != other.driver {
+        if *driver != other.driver {
             out.push("driver");
         }
-        match (&self.serial, &other.serial) {
+        match (serial, &other.serial) {
             (Some(a), Some(b)) if a != b => out.push("serial"),
             _ => {}
         }

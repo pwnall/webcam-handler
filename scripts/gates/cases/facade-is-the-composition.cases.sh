@@ -644,3 +644,147 @@ fail_case_the_facade_composes_a_lifecycle_from_a_private_helper() {
     gate_red_because 'as a lifecycle D18 keeps out of the facade' \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
+
+fail_case_a_bypass_is_red_when_the_facade_composes_through_an_unqualified_call() {
+    # **The arm the encapsulated population needed, and the one shape N271 closed next door and
+    # not here.** Two seeds, because the defect takes two lines: the facade imports the module
+    # instead of spelling it at each call, and the executor then assembles that very module by
+    # hand. Measured at HEAD on a copy — with the old derivation the population fell from seven
+    # modules to six, printed the smaller number, named no sentence, and passed the bypass in
+    # step two with a summary item-for-item the same as the unseeded tree's. The import is what
+    # makes this arm red-able in the direction that matters: revert the reader to the
+    # fully-spelled matcher and the seeded bypass goes green again.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::photo::{Destination, Photograph};$|use crate::photo::{Destination, Photograph};\nuse crate::resolve;|' \
+        "$(_facade "$tree")" || return 0
+    gate_seed '140,200s|crate::resolve::list(|resolve::list(|' "$(_facade "$tree")" || return 0
+    gate_seed 's|        self.facade.list()|        engine::resolve::list(self.facade.backend())|' \
+        "$(_executor "$tree")" || return 0
+    gate_red_because "names ${tick}engine::resolve::list${tick}, and ${tick}engine::resolve${tick} is a module" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_facade_imports_a_whole_vocabulary_of_its_own_crate() {
+    # The first of the two shapes this reader cannot reduce to a path, on the facade's side of
+    # the file. After `use crate::photo::*;` a composition move is a bare `take(…)` naming
+    # neither crate nor module, so the module leaves the encapsulated set — and a module that
+    # leaves it is one the executor may then assemble by hand. A commission satisfied by
+    # blindness is the one shape a predicate here may not have, so it is a counted refusal.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::settle::MonotonicClock;$|use crate::settle::MonotonicClock;\nuse crate::photo::*;|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because 'imports a whole vocabulary of this crate unqualified' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_an_import_of_the_facades_own_crate_yields_no_module() {
+    # The other shape, and the branch `gate_require_nonzero` cannot be: a population that falls
+    # and stays non-zero is satisfied by its survivors. An import naming this crate that this
+    # reader takes no module out of is a finding rather than a smaller number — the sentence
+    # `facade-stability-table-sync.sh` already carries for its own half of this file.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::settle::MonotonicClock;$|use crate::settle::MonotonicClock;\nuse crate::Unresolvable;|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because 'and this reader took no module name out of it' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_an_import_in_the_facade_never_closes() {
+    # The joiner's own bound on this side of the walk. An unterminated import would swallow the
+    # rest of the module into one logical line, and every method below it would be read as part
+    # of an import — an emptied population arriving as a parse failure, which must be a refusal
+    # rather than a pass.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::photo::{Destination, Photograph};$|use crate::photo::{Destination, Photograph;|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because 'opens an import whose braces are still open' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+pass_case_the_unreached_note_counts_both_spellings_of_a_call() {
+    # The note cannot fail — an unreached export is embedder-facing surface, per the header — so
+    # what is held here is its *population*, which is the whole of what the note buys: the next
+    # person deciding whether an export earns its place reads that line. Both directions are
+    # driven. `Facade::new` is called by the composition root at `crates/cli/src/main.rs`, so it
+    # must not be listed; a run that lists it is a run whose matcher reads one call spelling, and
+    # that is what the tree shipped until 2026-08-21. Then the same construction is renamed away,
+    # and `new` must appear — otherwise the assertion above is one nothing could falsify.
+    local tree heard
+    tree="$(gate_scratch_tree)"
+
+    heard="$(WCH_GATE_ROOT="$tree" "$GATE")" || return 1
+    printf '%s\n' "$heard"
+    if grep -Eq 'facade exports no file under .* calls .*[ :]new( |$)' <<<"$heard"; then
+        # Markdown backticks quoting a verb name, not command substitution.
+        # shellcheck disable=SC2016
+        printf 'the executor constructs the facade and the run lists `new` as unreached\n' >&2
+        return 1
+    fi
+
+    gate_seed 's|Facade::new(backend_for(cli)?)|Facade::built(backend_for(cli)?)|' \
+        "$(_executor "$tree")" || return 0
+    heard="$(WCH_GATE_ROOT="$tree" "$GATE")" || return 1
+    printf '%s\n' "$heard"
+    grep -Eq 'facade exports no file under .* calls .*[ :]new( |$)' <<<"$heard"
+}
+
+fail_case_a_bypass_is_red_when_the_facade_reaches_its_own_crate_through_super() {
+    # **The second spelling of the same shrink, seeded exactly as it was measured.** The repair
+    # that taught this reader to resolve calls through the names an import binds asked afterwards
+    # whether the statement said `crate::`, and `use super::resolve;` says nothing of the kind:
+    # on a copy of the tree the encapsulated set fell from seven modules to six, printed the
+    # smaller number, named no sentence and exited 0, after which the executor assembling
+    # `engine::resolve::list` by hand passed with the bypass printed as an allowed note (note
+    # **N328**). `super::` is idiomatic here — `crates/imaging/src/avi/write.rs` writes it — so
+    # this is a spelling the tree could grow rather than one invented for an arm. Both call
+    # sites are unqualified, because a single fully-spelled one left elsewhere would keep the
+    # module in the set and the arm would be red about something else.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::photo::{Destination, Photograph};$|use crate::photo::{Destination, Photograph};\nuse super::resolve;|' \
+        "$(_facade "$tree")" || return 0
+    gate_seed '140,200s|crate::resolve::|resolve::|' "$(_facade "$tree")" || return 0
+    gate_seed 's|        self.facade.list()|        engine::resolve::list(self.facade.backend())|' \
+        "$(_executor "$tree")" || return 0
+    gate_red_because "names ${tick}engine::resolve::list${tick}, and ${tick}engine::resolve${tick} is a module" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_bypass_is_red_when_the_facade_renames_its_own_module_with_self_as() {
+    # The third spelling, and the one the flattener erases rather than misreads. `use
+    # crate::resolve::{self as r};` reduces to `crate::resolve` — right about the module, silent
+    # about the name the file then writes — and the rename map was keyed on the last path
+    # segment, which is `resolve` and not `self`, so `r::list(` resolved to nothing. Measured on
+    # a copy: seven modules to six, no sentence, exit 0, and the hand-assembled bypass passing
+    # on the next run (note **N328**). `wch_self_renames` is the one home for that binding and
+    # this arm is what it is for.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::photo::{Destination, Photograph};$|use crate::photo::{Destination, Photograph};\nuse crate::resolve::{self as r};|' \
+        "$(_facade "$tree")" || return 0
+    gate_seed '140,200s|crate::resolve::|r::|' "$(_facade "$tree")" || return 0
+    gate_seed 's|        self.facade.list()|        engine::resolve::list(self.facade.backend())|' \
+        "$(_executor "$tree")" || return 0
+    gate_red_because "names ${tick}engine::resolve::list${tick}, and ${tick}engine::resolve${tick} is a module" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_an_import_of_the_facades_own_crate_through_self_yields_no_module() {
+    # The prefix that is deliberately *not* rewritten, and therefore the one that has to be
+    # refused. `self::X` inside module `m` names `crate::m::X`, so rewriting it to `crate::X`
+    # would invent a module this crate does not declare and hand the run a population derived
+    # from a fiction. The honest answer is the counted refusal the header promises, and this arm
+    # is the difference between promising it and having it: before `wch_names_this_crate` the
+    # condition looked for the literal `crate::`, and a statement spelled this way was neither
+    # resolved nor refused (note **N328**).
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::settle::MonotonicClock;$|use crate::settle::MonotonicClock;\nuse self::helpers::Thing;|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because 'and this reader took no module name out of it' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}

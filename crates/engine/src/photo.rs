@@ -44,10 +44,33 @@ use schema::control::{ControlSlug, ControlValue};
 use schema::error::{Error, Result};
 use schema::time::Stamp;
 
-use crate::actor::OpenCamera;
 use crate::capture;
-use crate::preview::Gap;
 use crate::settle::Clock;
+
+/// What one interruption did to a preview that was running, re-exported here because it is
+/// part of *this* module's answer.
+///
+/// [`crate::preview`] owns the type and produces it — it is what
+/// [`crate::preview::while_suspended`] measured — and D18 puts that module in the stability
+/// table's **No** column, because it is the machinery a photo runs a preview through rather
+/// than a value. But [`Taken::gap`] hands one to whoever calls [`take`], and `photo` is in the
+/// **Yes** column: an embedder who cannot *name* the type of a field it is handed is holding
+/// a module the contract only half-permits, which is the shape the review of 2026-08-21 found
+/// on this surface (note **N324**). The re-export is the whole repair for that half — the
+/// value is nameable from inside the Yes column, and the module that runs the stream stays
+/// outside it.
+pub use crate::preview::Gap;
+
+/// The open camera [`take`] photographs through, re-exported here for [`Gap`]'s reason.
+///
+/// [`crate::actor`] owns the alias and the argument for its `+ 'static` — it is the shape the
+/// actor's own work closures are written against — and D18 puts that module in the stability
+/// table's **No** column. But it is the first parameter of this module's headline verb, and
+/// `photo` is in the **Yes** column: an embedder who cannot *name* what a promoted verb asks of
+/// them is holding a module the contract only half-permits. The alias is transparent —
+/// `&mut (dyn Camera + 'static)` and nothing else — so this re-export costs the No column
+/// nothing and buys the Yes column the whole of its own signature (note **N328**).
+pub use crate::actor::OpenCamera;
 
 /// A photo, and — when the sink asked for them — its bytes.
 ///
@@ -326,7 +349,7 @@ pub fn take(
 /// format outside D6's set, [`schema::Error::StorageIo`] when the sink's path could not be
 /// written, and [`schema::Error::IllegalTransition`] when the sink names an encoding this
 /// build does not write.
-pub fn from_capture(
+pub(crate) fn from_capture(
     camera: &dyn Camera,
     captured: &capture::Capture,
     request: &PhotoRequest,
@@ -416,11 +439,14 @@ pub fn from_capture(
 /// `a_photos_record_loses_the_control_the_device_declined_and_keeps_the_rest` is what says
 /// so.
 ///
-/// Public because [`from_capture`] takes the answer as a parameter and its callers have to
-/// be able to produce one — and because *when* it is read is the load-bearing part: before
-/// the stream starts, never after.
+/// `pub(crate)` because [`from_capture`] takes the answer as a parameter and its callers have
+/// to be able to produce one — and because *when* it is read is the load-bearing part: before
+/// the stream starts, never after. Both were `pub` until 2026-08-21, when `from_capture`'s
+/// `&crate::capture::Capture` turned out to be a **No**-column type on a **Yes**-column
+/// module's surface (note **N324**); this one's stated reason for being public was that
+/// function, so it followed it in.
 #[must_use]
-pub fn controls_in_effect(camera: &mut dyn Camera) -> BTreeMap<ControlSlug, ControlValue> {
+pub(crate) fn controls_in_effect(camera: &mut dyn Camera) -> BTreeMap<ControlSlug, ControlValue> {
     camera.controls().map_or_else(
         |_| BTreeMap::new(),
         |controls| {

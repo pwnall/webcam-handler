@@ -66,6 +66,17 @@ const flow = {
   session: null,
   reviewing: null,
   status: null,
+  /**
+   * Whether the preview pane has been lent to a sweep, which is the stylesheet's question and no
+   * longer the buttons'.
+   *
+   * It was both until this batch: [`paint`] read it to disable the five verbs, which is note
+   * **N279**'s repair written where the one verb that had the defect could reach it. That home
+   * is now [`flow.inFlight`], which covers every verb rather than the one that was found, and
+   * what is left here is the fact `data-sweeping` publishes — app.css draws the preview slot
+   * differently while the sweep has it, so that an operator whose picture went away can see
+   * where it went.
+   */
   sweeping: false,
   /**
    * Who the sweep pane belongs to, for as long as a sweep has it. `null` when the preview does.
@@ -112,6 +123,32 @@ const flow = {
    * (note **N285**).
    */
   refused: new Set(),
+  /**
+   * How many of this flow's verbs are on the wire right now, so [`paint`] can disable the button
+   * for one the page has already sent.
+   *
+   * **A verb the shell knows is in flight is not a verb the shell may offer again**, and this is
+   * where that is decided for every button rather than in each of them. `sweep()` learned it
+   * first and locally: its button was disabled by `paint` four lines *after* a round trip, so an
+   * ordinary double-click ran two sweeps (note **N279**). `start()` had the identical shape and
+   * a louder ending — two `wch_calibrate_start` on the wire from one gesture, 28 runs out of 28,
+   * the daemon answering the loser `session_conflict: … resume it, or finish it before starting
+   * another`, and the page painting that in the refusal colour *about the session it had just
+   * successfully created and was holding*. `start`'s own `read !== reads` fence cannot see it:
+   * a refusal throws out of `rpc.call` in front of that check, so the fence covers the quiet
+   * half and not the loud one. Plan, Apply and Restore were re-entrant the same way and benign
+   * only because the daemon happens to be idempotent about them, which is not a property this
+   * page is entitled to assume.
+   *
+   * A **count, not a flag**: [`run`] is also what a sample click goes through, so two of these
+   * can be live at once and a flag cleared by whichever finished first would re-enable a button
+   * whose verb is still out.
+   *
+   * This is not the second state machine this module's header refuses. It is the shell declining
+   * to send a verb twice; what a verb *means* is still the daemon's, and an out-of-order click
+   * still reaches it and comes back as a refusal an operator reads (note **N314**).
+   */
+  inFlight: 0,
 };
 
 /**
@@ -124,6 +161,14 @@ const flow = {
  * when the sweep says it ended or when this many milliseconds have passed, and on the ordinary
  * path the wait is one turn of the event loop because the event is already queued behind the
  * answer.
+ *
+ * **It is the client's own bound and it is reconciled as one.** No Rust would read it — it bounds
+ * how long a *browser* waits on a socket only that browser can watch die — so `schema::limits` is
+ * the wrong home for it, and
+ * `crates/daemon/tests/web_client.rs`'s `the_bounds_the_page_runs_on_are_the_ones_this_build_declares`
+ * carries that reason beside the name, in the derived walk of every number this client declares.
+ * It is driven from both sides by the browser rung: the ending wins in the sweep-time pane's own
+ * claim, and this bound wins in the one that holds the ending on the wire (note **N313**).
  */
 const SWEEP_ENDING_WAIT_MS = 2000;
 
@@ -175,6 +220,19 @@ export function watching(camera, nodes) {
   flow.status = null;
   flow.refused.clear();
   flow.pane = null;
+  // **The sentence goes with the session it is about.** This function drops every other trace of
+  // the session — the id, the control under review, the document, the grid, the pane — and left
+  // `#flow-status` standing, so after a camera switch the line went on reading `session <uuid>
+  // started for <task>` over a `#flow` whose `data-session` is empty and whose four verbs are
+  // disabled: an operator told a session is open, shown no verb that touches it, and given
+  // nothing that says why. It is the class note **N279** named one element along — a line whose
+  // words and whose state were written by two different statements — and the fix is that the one
+  // function whose whole job is dropping the session drops its sentence too (note **N314**).
+  //
+  // The colour goes with it. A refusal left in red under a camera it is not about is the same
+  // wrong statement as the words, and louder.
+  nodes.status.classList.remove("failed");
+  nodes.status.textContent = "";
   // A camera switch is a new view, and there is no newer *read* to retire the one already on
   // the wire — N154's "a newer list is a newer view", which is the arrival a counter bumped only
   // by `refresh` cannot see. It retires an in-flight `wch_calibrate_start` as well as an
@@ -210,6 +268,14 @@ async function run(nodes, step) {
   // sweep's "sweeping brightness in 3 step(s)…" and the preview-drain wait — which are progress
   // rather than verdicts and must not inherit the previous click's refusal colour.
   nodes.status.classList.remove("failed");
+  // **The buttons go down before the first await, which is what makes a double-click one verb.**
+  // Both statements are synchronous and in the same task as the click, so the second half of an
+  // ordinary double-click meets a disabled button rather than a second `paint` that has not
+  // happened yet — [`flow.inFlight`] says what each of the five buttons cost before this was
+  // here. Every button and every sample is wired through this function, so this is the one place
+  // that has to know, and a verb added later inherits it by being a step.
+  flow.inFlight += 1;
+  paint(nodes);
   try {
     const said = await step();
     if (said !== undefined) {
@@ -222,6 +288,11 @@ async function run(nodes, step) {
     // beside the message rather than instead of it: the kind is what a reader branches on and
     // the message is what tells them which control and which session.
     nodes.status.textContent = err.kind ? `${err.kind}: ${err.message}` : err.message;
+  } finally {
+    // `finally`, because a step that threw is a verb that is no longer in flight exactly as a
+    // step that answered is — and a button left disabled by a refusal is the stranded state
+    // AGENTS rule 7 and docs/11 **H2** are about.
+    flow.inFlight -= 1;
   }
   paint(nodes);
 }
@@ -317,15 +388,14 @@ async function plan(rpc, nodes) {
  */
 async function sweep(rpc, nodes, preview) {
   requireSession();
-  // **The button is disabled before the first `await`, which is what makes a double-click one
-  // sweep.** It used to be disabled by the `paint` below, four lines *after* `rangeOf`'s round
-  // trip, so the second half of an ordinary double-click ran a whole second `sweep` for the same
-  // control: the daemon answered the loser `illegal_transition: sweeping: cannot sweep
-  // brightness`, the page filed a successfully swept control as refused, and the refusal's
-  // colour was left over the success sentence (note **N279**). A guard in the shell is not the
-  // second state machine this module's header refuses — it disables a verb the page *knows* is
-  // already in flight, which is `paint`'s stated rule, not an opinion about what the daemon
-  // would say.
+  // The pane is announced as the sweep's before the first `await`, so the stylesheet says where
+  // the preview went in the same task as the click rather than after a round trip.
+  //
+  // **The double-click is [`run`]'s to stop, not this line's.** These two statements were that
+  // guard until this batch — note **N279** landed them here, on the one verb whose second click
+  // had a visible ending — and `start` then turned out to have the identical shape and a louder
+  // one. The fence moved to the function every button already goes through; what stays here is
+  // the pane's own fact.
   flow.sweeping = true;
   paint(nodes);
   // Taken before anything is awaited, so a camera switch during the sweep retires the answer
@@ -1005,11 +1075,17 @@ function requireSession() {
 function paint(nodes) {
   const hasCamera = flow.camera !== null;
   const hasSession = flow.session !== null;
-  nodes.start.disabled = !hasCamera || flow.sweeping;
-  nodes.plan.disabled = !hasSession || flow.sweeping;
-  nodes.sweep.disabled = !hasSession || flow.sweeping;
-  nodes.apply.disabled = !hasSession || flow.sweeping;
-  nodes.restore.disabled = !hasSession || flow.sweeping;
+  // `inFlight` rather than `flow.sweeping`, which is what these five read until now: a sweep is
+  // one of the verbs this counts, so the count covers everything the flag covered and the four
+  // buttons the flag did not (see [`flow.inFlight`]). The flag stays because it is the *pane's*
+  // fact — `data-sweeping` is what the stylesheet reads to say the preview has been lent out —
+  // and that is a different question from whether a verb is on the wire.
+  const busy = flow.inFlight > 0;
+  nodes.start.disabled = !hasCamera || busy;
+  nodes.plan.disabled = !hasSession || busy;
+  nodes.sweep.disabled = !hasSession || busy;
+  nodes.apply.disabled = !hasSession || busy;
+  nodes.restore.disabled = !hasSession || busy;
   nodes.flow.dataset.sweeping = String(flow.sweeping);
   nodes.flow.dataset.session = hasSession ? flow.session.id : "";
 }

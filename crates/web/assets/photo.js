@@ -49,8 +49,27 @@ const PAINTABLE = { jpeg: "image/jpeg", png: "image/png" };
  * only its sink means exactly what a request written before those fields existed meant, and
  * a page that pinned a resolution here would be negotiating a format on an operator's
  * behalf without being asked.
+ *
+ * **The answer is painted only if the page is still waiting for it.** `stillWanted()` is the
+ * caller's question rather than this module's, because what retires a photograph is a *camera
+ * switch* and which camera is on screen is app.js's fact (this client's one home for it). It is
+ * the fence four modules beside this one already have and this one did not (docs/11 **M32**,
+ * notes **N154** and **N156**): a `wch_photo` is settle frames and a
+ * capture, seconds of it, and `#take-photo` being disabled for the duration stops a second
+ * photograph without stopping the camera buttons — so an answer that lands after the operator
+ * has moved on used to paint the walked-away-from camera's frame into the slot index.html calls
+ * "a shot an operator asked for and kept", under the name of the camera now on screen and a
+ * negotiation that camera cannot perform.
+ *
+ * The refusal arm asks the same question for the same reason, and it is the louder half: a D13
+ * sentence about the previous camera is still about the previous camera. A late answer is
+ * dropped in silence and deliberately — it is not a failure, and there is nobody left to tell.
+ * Note **N310** records what the absence of this argument looked like on a screen.
+ *
+ * It is a **required argument with no default**, because a default that painted would be a fence
+ * a caller can forget by saying nothing, and this module has exactly one caller.
  */
-export async function take(rpc, camera, { status, frame, report }) {
+export async function take(rpc, camera, { status, frame, report }, stillWanted) {
   status.classList.remove("failed");
   status.textContent = "taking a photo — the preview pauses and resumes by itself (N83)…";
   fill(report, []);
@@ -59,8 +78,14 @@ export async function take(rpc, camera, { status, frame, report }) {
       camera,
       request: { sink: { kind: "return_bytes", format: "jpeg" } },
     });
+    if (!stillWanted()) {
+      return;
+    }
     show(answer, { status, frame, report });
   } catch (err) {
+    if (!stillWanted()) {
+      return;
+    }
     status.classList.add("failed");
     // The D13 name, kept: `busy` and `device_gone` and `settle_timeout` are three different
     // things to do next, and "the photo failed" is none of them (AGENTS rule 7).

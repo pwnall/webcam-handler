@@ -206,7 +206,7 @@ pub fn read(bytes: &[u8]) -> Result<GrayImage> {
             .and_then(|decoder| oriented_luma(format, decoder)),
         PhotoFormat::Png => {
             image::codecs::png::PngDecoder::with_limits(std::io::Cursor::new(bytes), budget())
-                .map_err(|err| refused(format, &err))
+                .map_err(|err| refused_before_a_pixel(format, &err))
                 .and_then(|decoder| oriented_luma(format, decoder))
         }
         PhotoFormat::Ppm => read_netpbm(bytes),
@@ -222,13 +222,64 @@ fn refused(format: PhotoFormat, refused: &image::ImageError) -> schema::Error {
     )
 }
 
+/// A construction-time refusal, and this build's own sentence when it was the budget that
+/// spoke.
+///
+/// The decode budget refuses through two doors: [`oriented_luma`]'s check on the extents the
+/// header declares, and the ceiling [`budget`] hands `PngDecoder::with_limits`, which the
+/// `png` crate spends on the intermediate buffers a *row* needs — so a file whose width alone
+/// outruns the budget is refused here, before the extents are ever compared. Until this
+/// function that second door answered in the dependency's words, `png decode failed: Memory
+/// limit exceeded`, which names neither the file nor the number it was measured against and
+/// which an unattended reader cannot tell from a machine that is out of memory — the one
+/// distinction note **N268**'s arm exists to hold, and the split note **N321** measured.
+///
+/// Every `ImageError::Limits` from that constructor is the budget and nothing else: [`budget`]
+/// leaves both of `image`'s dimension ceilings unset on purpose, so `max_alloc` is the only
+/// limit this build hands the decoder and the only one it can have exceeded.
+fn refused_before_a_pixel(format: PhotoFormat, err: &image::ImageError) -> schema::Error {
+    match err {
+        image::ImageError::Limits(_) => crate::fault::imaging_failure(
+            READ_OP,
+            format!(
+                "the {} decoder would not reserve the buffers this file's header asks for, \
+                 which are {}",
+                format.as_str(),
+                past_the_budget()
+            ),
+        ),
+        _ => refused(format, err),
+    }
+}
+
+/// The clause both of the decode budget's doors end on.
+///
+/// One home for the number *and* for the words it is checked against: the two refusals say
+/// different things about what the file asked for, and the same thing about what this build
+/// will not spend on it, which is the half an unattended reader acts on.
+fn past_the_budget() -> String {
+    format!(
+        "past this build's decode budget of {} bytes",
+        limits::MAX_PHOTO_DECODE_BYTES
+    )
+}
+
 /// What this build is willing to allocate for one photograph's raster
 /// ([`limits::MAX_PHOTO_DECODE_BYTES`]), in the shape the `image` crate's decoders take it.
 ///
 /// Only the allocation ceiling is set. The two *dimension* ceilings stay unset on purpose: a
 /// photograph is refused here for what it would cost, not for how it is shaped, and a camera
 /// that one day delivers a very wide, very short frame is a device this build represents
-/// rather than an input it declines (rule 6).
+/// rather than an input it declines (rule 6). It is also what makes every `ImageError::Limits`
+/// this build sees the budget speaking, which is what [`refused_before_a_pixel`] relies on.
+///
+/// Handed to `PngDecoder::with_limits` as well as to `set_limits`, because the `png` crate
+/// spends it on the intermediate buffers it allocates while reading the header — one output
+/// line, and the growth of any chunk it is asked to keep — and `set_limits` leaves those
+/// alone by its own comment. That is a door of its own rather than a belt under
+/// [`oriented_luma`]'s check: it answers on the *width*, before the extents are compared, and
+/// `a_photograph_whose_header_alone_outruns_the_budget_is_refused_in_this_builds_own_words`
+/// goes red when this line stops setting it.
 fn budget() -> image::Limits {
     let mut budget = image::Limits::no_limits();
     budget.max_alloc = Some(limits::MAX_PHOTO_DECODE_BYTES);
@@ -259,9 +310,9 @@ fn oriented_luma(format: PhotoFormat, mut decoder: impl image::ImageDecoder) -> 
             READ_OP,
             format!(
                 "the {} header declares {width}x{height}, which is {declared} bytes of raster \
-                 and past this build's decode budget of {} bytes",
+                 and {}",
                 format.as_str(),
-                limits::MAX_PHOTO_DECODE_BYTES
+                past_the_budget()
             ),
         ));
     }
@@ -901,7 +952,8 @@ mod tests {
     ///
     /// Built here as bytes rather than committed to `corpus/images/`, which holds
     /// photographs this build could have taken: a header describing 200 000 pixels on a side
-    /// is not one of those, and seventy bytes of it are cheaper to read here than to look up.
+    /// is not one of those, and a few dozen bytes of it are cheaper to read here than to look
+    /// up.
     /// The CRCs are computed rather than transcribed, because the `png` crate checks them and
     /// a fixture it refuses for the wrong reason would be an arm green for the wrong reason.
     fn png_declaring(width: u32, height: u32) -> Vec<u8> {
@@ -1069,6 +1121,68 @@ mod tests {
         assert!(
             !message.contains(&limits::MAX_PHOTO_DECODE_BYTES.to_string()),
             "a photograph this build could have taken was refused as too large: {message}"
+        );
+    }
+
+    #[test]
+    fn a_photograph_whose_header_alone_outruns_the_budget_is_refused_in_this_builds_own_words() {
+        // The budget's *other* door, and the reason it needs an arm of its own. The ceiling
+        // `budget()` hands `PngDecoder::with_limits` is spent by the `png` crate on the
+        // buffers one output line needs, so a file whose **width** alone outruns the budget is
+        // refused while the header is still being read — before `oriented_luma` ever compares
+        // the extents. Until this arm that door answered `png decode failed: Memory limit
+        // exceeded`: the same class as the arm above, the same verb, the same exit code, and a
+        // sentence naming neither the format nor the number, which is exactly the reading note
+        // **N268** wrote its own assertion to prevent ("so an unattended reader can tell a file
+        // that is too big from a machine that is out of memory").
+        //
+        // The width is derived from the budget rather than transcribed: four bytes per pixel
+        // is colour type 6 at depth 8, which is what `png_declaring` writes, so one pixel more
+        // than the budget will hold is the first width this build must refuse.
+        let width = u32::try_from(limits::MAX_PHOTO_DECODE_BYTES / 4 + 1)
+            .expect("this build's decode budget is inside four bytes per pixel of u32::MAX");
+        let bytes = png_declaring(width, 1);
+        let refusal = read(&bytes).expect_err(
+            "a photograph whose rows alone outrun the budget was decoded rather than refused",
+        );
+        let message = format!("{refusal}");
+        assert!(
+            message.contains(PhotoFormat::Png.as_str())
+                && message.contains(&limits::MAX_PHOTO_DECODE_BYTES.to_string()),
+            "the refusal must name the format and the budget it exceeded, whichever of the \
+             budget's two doors answered: {message}"
+        );
+        // And *which* door, because that is the half no other arm can hold. This file's
+        // declared raster is also past the budget, so a build that had stopped handing the
+        // constructor a ceiling would still refuse it — one door later, in the extents
+        // sentence below, with nothing red. Naming the header clause here is what makes the
+        // ceiling itself drivable.
+        assert!(
+            message.contains("would not reserve the buffers this file's header asks for"),
+            "the row past the budget was not refused while the header was being read, so the \
+             ceiling `budget()` hands the constructor is doing nothing: {message}"
+        );
+    }
+
+    #[test]
+    fn a_photograph_whose_rows_fit_the_budget_is_refused_for_its_raster_and_not_for_its_rows() {
+        // The other side of the door above (N255), one pixel down: a row of exactly the budget
+        // is a row this build will hold, so the constructor must let this file through and the
+        // refusal must be the *extents* sentence. Two pixel rows of it are past the budget, so
+        // the file is still refused and nothing is decoded — which is what keeps this arm from
+        // costing half a gigabyte to say a row fits.
+        let width = u32::try_from(limits::MAX_PHOTO_DECODE_BYTES / 4)
+            .expect("this build's decode budget is inside four bytes per pixel of u32::MAX");
+        let bytes = png_declaring(width, 2);
+        let refusal = read(&bytes).expect_err("two rows of it are past the budget");
+        let message = format!("{refusal}");
+        assert!(
+            !message.contains("would not reserve the buffers this file's header asks for"),
+            "a row this build will hold was refused while the header was being read: {message}"
+        );
+        assert!(
+            message.contains(&format!("declares {width}x2")),
+            "the refusal must name the extents it measured: {message}"
         );
     }
 

@@ -49,7 +49,11 @@
 #     272 items in this tree, and reading a paragraph-final sentence on its own line as a
 #     spliced summary matches 12 places of which 11 are ordinary prose. Review is what finds
 #     this shape; what the rule above still buys is that a *surviving* block cannot lose its
-#     summary silently.
+#     summary silently. It happened a third time in the P7e/P8d/P9d repair batch, in this same
+#     file — `delivery_rows`' new block was written directly under `ended_text`'s with no blank
+#     line between them, so `ended_text` was left with no `///` at all and `delivery_rows`
+#     rendered summarised as "Why a recording stopped, as a phrase." Review found it again, and
+#     N222's two measurements are what say why that is still the answer (note **N331**).
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR

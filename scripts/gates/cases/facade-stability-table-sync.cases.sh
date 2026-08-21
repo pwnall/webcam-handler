@@ -173,6 +173,12 @@ pass_case_a_module_added_to_both_the_crate_and_its_row_reconciles() {
         "$(_imaging_lib "$tree")" || return 0
     gate_seed "s|${tick}stream_stats${tick}, ${tick}video${tick}|${tick}stream_stats${tick}, ${tick}tonemap${tick}, ${tick}video${tick}|" \
         "$(_facade "$tree")" || return 0
+    # And the module's own file, because claim 6 reads one: a **Yes** row is a promise about a
+    # public surface, so a module in that column with no source is a promise nothing checks and
+    # a counted refusal (`fail_case_a_yes_module_has_no_file_this_reader_can_find` is that arm).
+    # These two arms differ by exactly this line, which is what makes each of them about one
+    # thing.
+    printf '//! A module this arm added.\n' >"$tree/crates/imaging/src/tonemap.rs"
     WCH_GATE_ROOT="$tree" "$GATE"
 }
 
@@ -380,5 +386,176 @@ fail_case_a_module_scope_public_struct_field_names_a_module_the_table_forbids() 
     gate_seed 's|^impl Facade {$|pub struct GapHolder {\n    pub gap: crate::preview::Gap,\n}\n\nimpl Facade {|' \
         "$(_facade "$tree")" || return 0
     gate_red_because "does not put ${tick}engine::preview${tick} in the **Yes** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_an_inherent_impl_hands_an_embedder_a_module_the_table_forbids() {
+    # **The fourth spelling of a reachable public item, and the one this walk could not see.**
+    # Measured at HEAD on a copy: the same leak that goes red as a free `pub fn` passed as a
+    # `pub fn` on an inherent impl of a module-scope `pub` type, with a counted summary
+    # byte-identical to the unseeded tree — because the walk entered `impl Facade {` alone and
+    # every other `impl … {` fell through to the module-scope branch, which matches nothing at
+    # an impl header and therefore dropped every line inside it. `unreachable_pub` is a
+    # workspace lint and `facade` is a `pub mod`, so `PreviewLens::gap` is genuinely API.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^impl Facade {$|pub struct PreviewLens;\n\nimpl PreviewLens {\n    pub fn gap(\&self) -> Option<crate::preview::Gap> {\n        None\n    }\n}\n\nimpl Facade {|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because "does not put ${tick}engine::preview${tick} in the **Yes** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_trait_impl_hands_an_embedder_a_module_the_table_forbids() {
+    # The same class where there is no `pub` to read at all: a trait impl makes its items as
+    # public as the trait, so an associated type or a method signature naming a **No**-column
+    # module is a module an embedder cannot avoid holding — and a walk that had been widened to
+    # `pub` items on impl blocks would still have read past this one. The arm is what makes
+    # "every associated signature the language makes reachable" the population rather than a
+    # fifth keyword in a list (notes **N249**, **N271**).
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^impl Facade {$|impl Iterator for Facade {\n    type Item = crate::preview::Gap;\n\n    fn next(\&mut self) -> Option<Self::Item> {\n        None\n    }\n}\n\nimpl Facade {|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because "does not put ${tick}engine::preview${tick} in the **Yes** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+pass_case_a_private_helper_on_an_inherent_impl_is_not_the_surface() {
+    # The false branch of the two arms above, so they can go red for the reason they claim. A
+    # method that is *not* written `pub`, on an inherent impl of a type in this file, is
+    # reachable by nobody outside the crate — and D18's contract is about what an embedder
+    # cannot avoid holding. A walk that read every line inside every impl block would fail here,
+    # and it would be failing on the encapsulation half of the file, which is
+    # `facade-is-the-composition.sh`'s subject and not this one's.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^impl Facade {$|pub struct PreviewLens;\n\nimpl PreviewLens {\n    fn gap(\&self) -> Option<crate::preview::Gap> {\n        None\n    }\n}\n\nimpl Facade {|' \
+        "$(_facade "$tree")" || return 0
+    WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_facade_imports_a_forbidden_type_through_super() {
+    # **Claim 4's matcher knew one of the three prefixes a path into this crate has.** Measured
+    # on a copy: `use super::preview::Gap as PreviewGap;` beside a `pub fn last_gap(&self) ->
+    # Option<PreviewGap>` on `impl Facade` — a **No**-column type handed to an embedder from the
+    # headline surface — ran item-for-item the unseeded tree, `checked 3 engine modules … the
+    # surface an embedder cannot avoid holding`, and passed (note **N328**). `facade.rs` is a
+    # top-level module of its crate, so `super::preview` *is* `crate::preview`, and
+    # `rust-imports.awk` is where the two spellings become one because the sibling predicate
+    # reads the same file.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use crate::settle::MonotonicClock;$|use crate::settle::MonotonicClock;\nuse super::preview::Gap as PreviewGap;|' \
+        "$(_facade "$tree")" || return 0
+    gate_seed 's|^impl Facade {$|impl Facade {\n    pub fn last_gap(\&self) -> Option<PreviewGap> {\n        None\n    }\n|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because "does not put ${tick}engine::preview${tick} in the **Yes** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_facade_spells_a_forbidden_module_inline_through_super() {
+    # The same leak with no import to read at all, which is why the rewriting happens inside
+    # `emit` rather than at the import hook: a signature is free to spell the whole path, and
+    # `-> Option<super::preview::Gap>` passed on the same copy with the same count (note
+    # **N328**). The pair is the point — one arm proves the import half, this one proves that a
+    # walk widened only at the import hook would still have been half a reader.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^impl Facade {$|impl Facade {\n    pub fn last_gap(\&self) -> Option<super::preview::Gap> {\n        None\n    }\n|' \
+        "$(_facade "$tree")" || return 0
+    gate_red_because "does not put ${tick}engine::preview${tick} in the **Yes** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_yes_module_asks_its_holder_for_a_forbidden_type_it_imported() {
+    # **Claim 6's own arm, seeded as the tree shipped it.** `engine::photo` is **Yes**;
+    # `photo::take` takes an `OpenCamera<'_>`, which a private `use crate::actor::OpenCamera;`
+    # binds — so the signature names no module at all and the forbidden one is reachable only
+    # through the import. That is the shape claim 4 cannot see, because claim 4 reads
+    # `facade.rs`; it stood in the tree on the day claim 4 landed and was found by review rather
+    # than by anything runnable (note **N328**). The seed is one character short of the repair:
+    # turn the `pub use` back into a `use` and the escape is gone.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^pub use crate::actor::OpenCamera;$|use crate::actor::OpenCamera;|' \
+        "$tree/crates/engine/src/photo.rs" || return 0
+    gate_red_because "names ${tick}crate::actor${tick}, which the table puts in the **No** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_yes_module_spells_a_forbidden_module_in_a_public_signature() {
+    # The other half of claim 6's reader: a path spelled outright, with no import to resolve it
+    # through. Seeded into `engine::resolve`, which is **Yes** and imports nothing of this crate
+    # today, so the arm is about the signature walk rather than about the binding map — and a
+    # reader that only resolved bindings would pass it.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^pub fn list(|pub fn peek_gap() -> Option<crate::preview::Gap> {\n    None\n}\n\npub fn list(|' \
+        "$tree/crates/engine/src/resolve.rs" || return 0
+    gate_red_because "names ${tick}crate::preview${tick}, which the table puts in the **No** column" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+pass_case_a_yes_module_may_re_export_what_it_hands_over() {
+    # **The exemption, driven both ways, because an exemption nothing can falsify is a hole.** A
+    # bare `pub use` of a **No**-column item is how a **Yes** module answers for its own surface
+    # — `photo::Gap` and `photo::OpenCamera` are that repair — so a name bound that way binds
+    # nothing in claim 6's map. First the seeded re-export and the signature that uses it must be
+    # green; then the very same two lines with the `pub` taken off the import must be red,
+    # because otherwise the exemption above is one nothing could tell from silence.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^pub fn list(|pub use crate::preview::Gap;\n\npub fn peek_gap() -> Option<Gap> {\n    None\n}\n\npub fn list(|' \
+        "$tree/crates/engine/src/resolve.rs" || return 0
+    WCH_GATE_ROOT="$tree" "$GATE" || return 1
+
+    gate_seed 's|^pub use crate::preview::Gap;$|use crate::preview::Gap;|' \
+        "$tree/crates/engine/src/resolve.rs" || return 0
+    local heard
+    heard="$(WCH_GATE_ROOT="$tree" "$GATE" 2>&1)" && {
+        printf '%s\n' "$heard"
+        printf 'the same signature stayed green with the re-export demoted to a private import\n' >&2
+        return 1
+    }
+    grep -Fq "names ${tick}crate::preview${tick}, which the table puts in the **No** column" <<<"$heard"
+}
+
+fail_case_a_yes_module_has_no_file_this_reader_can_find() {
+    # The population's own refusal. Claim 6 derives its files from `gate_pub_mods` filtered by
+    # the table, so a module in the **Yes** column whose source this reader cannot locate is a
+    # public surface nothing checks — and an unwalked module is exactly the shrink
+    # `gate_require_nonzero` cannot see, one file rather than one import along. Two seeds,
+    # because the module has to be both declared and classified before it is missing.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^pub mod sweep;$|pub mod ghost;\npub mod sweep;|' "$(_engine_lib "$tree")" || return 0
+    gate_seed "s|${tick}discover${tick}, ${tick}facade${tick}, ${tick}pairing${tick}|${tick}discover${tick}, ${tick}facade${tick}, ${tick}ghost${tick}, ${tick}pairing${tick}|" \
+        "$(_facade "$tree")" || return 0
+    gate_red_because 'to read its surface out of' env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_a_yes_module_imports_a_whole_vocabulary_of_its_own_crate() {
+    # The shape claim 6's reader cannot reduce to a path, on the Yes modules' side. After `use
+    # crate::*;` any item of any module can be written bare in a signature, so a **No**-column
+    # type would reach an embedder through this module with the walk reading a clean surface —
+    # a commission satisfied by blindness, which is the one thing a predicate here may not be.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use schema::backend::CameraBackend;$|use schema::backend::CameraBackend;\nuse crate::*;|' \
+        "$tree/crates/engine/src/resolve.rs" || return 0
+    gate_red_because 'imports a whole vocabulary of this crate unqualified' \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_an_import_in_a_yes_module_yields_no_module_name() {
+    # And the other refusal, for `self::` — the prefix that is deliberately not rewritten,
+    # because inside module `m` it names `crate::m::` and rewriting it would invent a module.
+    # An import this reader cannot reduce is a signature it will resolve against an incomplete
+    # map, so it is a counted refusal rather than a quieter number (note **N328**).
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^use schema::backend::CameraBackend;$|use schema::backend::CameraBackend;\nuse self::helpers::Thing;|' \
+        "$tree/crates/engine/src/resolve.rs" || return 0
+    gate_red_because 'and this reader took no module name out of it' \
         env WCH_GATE_ROOT="$tree" "$GATE"
 }

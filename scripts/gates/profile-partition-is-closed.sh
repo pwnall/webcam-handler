@@ -52,6 +52,14 @@
 # bare name would be an ambiguity this predicate would have to guess past. The `impl` a function
 # lives in is also not the struct being destructured — `DeviceProfile::compare` destructures
 # `ProfileInvariant` — so the two are separate columns rather than one inferred from the other.
+# Both of `camera.rs`'s `differing_fields` are rows now. Until 2026-08-21 only `CameraInfo`'s
+# was, and this header named the ambiguity while the row list resolved it in one direction: the
+# neighbour it delegates the identity half to — the comparator behind
+# `Error::FingerprintMismatch` and `lifecycle::belongs_to` — read its five fields through
+# `self.` and could not be given a row at all, because claim 3 fails a function carrying zero
+# patterns. A field added to `CameraFingerprint` was absorbed by the compiler, by all 1688
+# tests and by this predicate at once, and two fingerprints differing only in it answered
+# `matches = true` (note **N323**).
 #
 # ## The five claims
 #
@@ -135,6 +143,7 @@ tick='`'
 declared_rows=(
     "crates/schema/src/profile.rs	ProfileInvariant	DeviceProfile	compare	ProfileInvariant	2"
     "crates/schema/src/camera.rs	CameraInfo	CameraInfo	differing_fields	CameraInfo	1"
+    "crates/schema/src/camera.rs	CameraFingerprint	CameraFingerprint	differing_fields	CameraFingerprint	1"
     "crates/schema/src/profile.rs	DeviceDifference	DeviceDifference	sections	Self	1"
     "crates/schema/src/profile.rs	InvariantDifference	InvariantDifference	sections	Self	1"
 )

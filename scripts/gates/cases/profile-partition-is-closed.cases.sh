@@ -82,6 +82,36 @@ fail_case_a_field_is_added_to_the_struct_and_not_to_the_pattern() {
         env WCH_GATE_ROOT="$tree" "$GATE"
 }
 
+fail_case_the_fingerprint_grows_a_field_its_comparator_never_sees() {
+    # The fifth row, seeded at the struct that had none until 2026-08-21. `CameraFingerprint` is
+    # the identity half of D15 and its `differing_fields` is what
+    # `Error::FingerprintMismatch` and `lifecycle::belongs_to` decide a refusal from, so a field
+    # it ignores is a snapshot restored onto a camera the new field says is a different device.
+    # That is exactly what the tree did: the function read its five fields through `self.`, the
+    # whole workspace suite stayed green under a seeded sixth field, and this predicate could not
+    # be given a row for it because claim 3 fails a function carrying zero patterns (note
+    # **N323**). Seeded here as text, because on the repaired tree the compiler catches it — and
+    # the compiler is exactly what stops asking the day somebody simplifies the pattern away.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed 's|^    pub serial: Option<String>,$|&\n    pub firmware: Option<String>,|' \
+        "$(_camera "$tree")" || return 0
+    gate_red_because "without naming its field ${tick}firmware${tick}" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
+fail_case_the_fingerprints_destructuring_is_simplified_into_field_access() {
+    # The same regression as the arm below, at the new row, and the shape the tree actually
+    # shipped rather than a hypothetical one: five bindings used once each, replaced by `self.`.
+    # Nothing about the result stops compiling, and this is the only reader left that says so.
+    local tree
+    tree="$(gate_scratch_tree)"
+    gate_seed '/^impl CameraFingerprint {$/,/^}$/ s|^        let CameraFingerprint {$|        let bus_path = \&self.bus_path;|' \
+        "$(_camera "$tree")" || return 0
+    gate_red_because "binds ${tick}CameraFingerprint${tick} in 0 ${tick}let${tick} pattern(s)" \
+        env WCH_GATE_ROOT="$tree" "$GATE"
+}
+
 fail_case_the_destructuring_is_simplified_into_field_access() {
     # The regression this predicate was written for, in its purest form: somebody reads
     # `let Self { formats, controls, measured_pairs } = self;`, sees three bindings used once

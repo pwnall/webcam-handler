@@ -221,14 +221,22 @@ expand_alternation() {
 selections=0
 branches=0
 commands=0
+declare -A phase_rows=()
+declare -A phase_suite=()
+declare -A phase_selftest=()
 while IFS=$'\t' read -r phase kind selection what; do
     case "$phase" in
     '#'* | '') continue ;;
     esac
+    phase_rows["$phase"]=$((${phase_rows["$phase"]:-0} + 1))
 
     case "$kind" in
     command)
         commands=$((commands + 1))
+        case "${selection%% *}" in
+        ./scripts/gates/run-all.sh) phase_suite["$phase"]=1 ;;
+        ./scripts/gates/selftest.sh) phase_selftest["$phase"]=1 ;;
+        esac
         # A criterion is a command someone can run. If it names a script, the script has
         # to be there: a phase gate whose criterion is a missing file fails at the worst
         # possible moment otherwise.
@@ -287,6 +295,32 @@ while IFS=$'\t' read -r phase kind selection what; do
         ;;
     esac
 done <"$table"
+
+# --------------------------------------------------------------- every phase runs the suite
+#
+# **A phase that adopts predicates and never runs their self-test closes on rules nothing has
+# proven able to fail.** The pair — `run-all.sh` over the tree and `selftest.sh` over its own
+# inverses — is the first thing that lands in a phase block and every one of g0 through g7
+# carries it; g8 and g9 opened without it and reached their closing review that way, so
+# `just gate-g8` would have run four predicates and `just gate-g9` three, none of them
+# self-tested by the gate adopting them, and a P9-era repair to a predicate would have sat
+# inside no open phase gate at all. Nothing in docs/13, docs/15 or this table's header grants a
+# phase a dispensation, so the rule is asserted here rather than left to the reader who writes
+# the next block. It is checked against the row set rather than against a list of phase names:
+# the phases are whatever the table declares.
+phases_checked=0
+while IFS= read -r phase; do
+    [[ -n "$phase" ]] || continue
+    phases_checked=$((phases_checked + 1))
+    if [[ -z "${phase_suite[$phase]:-}" ]]; then
+        gate_fail "$phase declares ${phase_rows[$phase]} criteria and none of them runs ./scripts/gates/run-all.sh; every phase from g0 to g7 buys the whole predicate suite over the tree with one row, so a phase without it closes while the predicates it adopted are green only in \`just ci\` — add the row in the words its siblings use, in the same commit as whatever left it out"
+    fi
+    if [[ -z "${phase_selftest[$phase]:-}" ]]; then
+        gate_fail "$phase declares ${phase_rows[$phase]} criteria and none of them runs ./scripts/gates/selftest.sh; a gate that runs its predicates without running their inverses closes a phase on rules nothing has proven able to go red, which is AGENTS rule 2 read as prose rather than as a criterion — add the row in the words its siblings use, in the same commit as whatever left it out"
+    fi
+done < <(printf '%s\n' "${!phase_rows[@]}" | sort)
+gate_checked "$phases_checked" "phases the table declares, each asserted to carry both the predicate suite and its self-test"
+gate_require_nonzero "$phases_checked" "phases in the criteria table"
 
 gate_checked "$selections" "phase-gate test selections listed"
 gate_checked "$branches" "named branch(es) of those selections' alternations, each counted against the tests its own row selected"
