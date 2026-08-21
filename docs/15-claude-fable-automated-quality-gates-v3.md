@@ -124,7 +124,10 @@ One row per criterion in `phase-criteria.tsv` (`phase`, `kind`, selection, docs/
 words); `phase.sh` runs and counts a phase's rows (`just gate-g0` … and `gate-g7`+ as
 docs/13's phases open); `counted-selections.sh` proves no selection went to zero; rows
 land in the same commit as what they prove. Baseline: 207 rows, g0=9 g1=16 g2=25 g3=32
-g4=42 g5=44 g6=39.
+g4=42 g5=44 g6=39 — the closed phases, which do not move. `g7`, `g8` and `g9` accrete row by
+row as docs/13's phases run, and how many each holds today is what `phase.sh` counts when the
+gate is run; a figure for them written here would be stale by the next sub-milestone (notes
+**N153**, **N158**).
 
 ### The battery, the rungs, the floor
 
@@ -137,7 +140,9 @@ g4=42 g5=44 g6=39.
   (`rung-vivid-managed` via the blessed helper); R3 (`smoke-hw`, fail-fast off, census
   compared, motor suites default-on); the oracle rung (`rung-oracles`, four verdicts);
   Miri (`just miri`, the population provably including every reachable block).
-- **The mutation floor** (`just mutants`): 21 files in `examine_globs`, exclusions as
+- **The mutation floor** (`just mutants`): the files `.cargo/mutants.toml`'s `examine_globs`
+  names — held to the tree in both directions by `mutation-scope-is-decided.sh` since P9,
+  which is why the list is not counted here — exclusions as
   dated absences with reasons, whole-workspace judgment, register checked both ways,
   three exits (green / finding / NO VERDICT). **The v3 posture change is a re-pricing,
   not a mechanism** [N251–N255]: the register's stopped-surviving direction has fired

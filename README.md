@@ -261,7 +261,7 @@ having still checked the directory mode.
 
 | tool | apt / cargo | what it buys | what the decline costs |
 |---|---|---|---|
-| `nodejs`, `npm` | `sudo apt install nodejs npm` | **R1-web**, the browser rung | 24 browser claims, 206 assertions |
+| `nodejs`, `npm` | `sudo apt install nodejs npm` | **R1-web**, the browser rung | every claim in `crates/daemon/tests/browser/claims.json`, whose count the rung prints on each run |
 | pinned Playwright + Chromium | `just rung-web-install` | the same rung's actual browser | as above; node alone is not enough |
 | `ffmpeg` (for `ffprobe`), `mpv` | `sudo apt install ffmpeg mpv` | the container oracles the recording rung uses | the AVI muxer is believed only by readers we wrote |
 | `kmod`, the `vivid` module | `sudo apt install kmod`; see below | **R2**, the virtual-driver rung | 77 controls and compound payloads nothing else reaches |

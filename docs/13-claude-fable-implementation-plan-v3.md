@@ -85,12 +85,25 @@ but the last. The sizing lesson stands and this is its cost, paid once and state
 | P7c, P7d, P8a, P8b, P8c | `7dd0c3e` | the projection and `profile compare`; `engine::facade`; the stream-stats accumulator and `Fault::FrameGap`; `imaging::compare` with `image-compare` adopted (N260); D19's hermetic contract and the declining `hw_gone_*` recipes |
 | P9a, P9b | `b3aa781` | the two-pane workbench shell over the 77-control fixture; `/session-photo` and both halves of its route partition |
 | P9c (flow) | `a907975` | the human-driven flow, `selector: human` produced at last, and the preview-release wait N264 records — **the sweep-time pane was split off here under P9c's own sizing licence, and the deferral was not written down**, which left three sentences in the tree describing a pane no line of code built (note **N277**) |
-| P9c (sweep view) | *this batch* | the pane swap D20 asks for: `#sweep-view` taking the preview's slot for the length of a sweep and giving it back **on the sweep's own terminal event** rather than on the call's answer (N278), with progress and the freshest sample off the one `wch_subscribe_calibration` this page opens; plus what P9c's own claims had stopped short of — the two verbs nothing had clicked (N273), the M32 fence the flow was missing over its read *and its assignment* (N154, N156, N280), `/session-photo`'s consumer reconciled with the daemon (N275), and D20's criteria field. The batch's own adversarial reading landed with it: a non-re-entrant sweep (N279), a `busy` no longer interned as an incapacity (N285), a grid a refusal no longer empties (N281), a wait that says what its predicate proves (N282), driven arms for the two guards nothing could redden (N283), and the citation predicate widened to the class it names (N284) |
+| P7d, P8b (the command-line halves) | `1ddf472`…`b12dd9d` | the block this table had not recorded, added here rather than left out because the ledger says it is live: the direct CLI rebuilt on the facade so the two cannot drift (`37e1633`); `photo diff` as the second document verb, its dimension-mismatch reason surviving all the way to a person (`ccb74f7`); D18's two `g7` rows and docs/15's *delta* for P7c's projection criterion, which landed as a predicate rather than as the commissioned compile-fail fixture (`d30a293`); the preview's own refusal sentence reaching the page (**N265**); the R3 rung re-run against three attached cameras after four things moved underneath it (**E20**); and the three repairs an adversarial reading of that batch returned, with the rest handed to the next session in writing |
+| P8b (repair) | `a71748a` | one home for RGB→luma: `compare::read` measured JPEG and PNG in Rec. 709 and Netpbm in a third spelling of BT.601, so a scene scored 0.9688 against itself and `photo diff` disagreed with the calibration reported for the same photograph (note **N266**), with `luma-has-one-home.sh` holding the *class*; and a photograph read at the orientation its own EXIF declares (note **N267**) |
+| P7d (repair) | `962dff6` | one home for reading a Rust import, `scripts/gates/rust-imports.awk`, after a grouped `use engine::{…}` took the facade gate's population to zero and printed a summary byte-identical to the unseeded tree — the one-home law defeated by a brace, in five other spellings besides (notes **N269**, **N271**); `facade-stability-table-sync.sh` beside it, and the stability table made true of the crates it names in both directions |
+| P9c (sweep view) | `e9b1633` | the pane swap D20 asks for: `#sweep-view` taking the preview's slot for the length of a sweep and giving it back **on the sweep's own terminal event** rather than on the call's answer (N278), with progress and the freshest sample off the one `wch_subscribe_calibration` this page opens; plus what P9c's own claims had stopped short of — the two verbs nothing had clicked (N273), the M32 fence the flow was missing over its read *and its assignment* (N154, N156, N280), `/session-photo`'s consumer reconciled with the daemon (N275), and D20's criteria field. The batch's own adversarial reading landed with it: a non-re-entrant sweep (N279), a `busy` no longer interned as an incapacity (N285), a grid a refusal no longer empties (N281), a wait that says what its predicate proves (N282), driven arms for the two guards nothing could redden (N283), and the citation predicate widened to the class it names (N284) |
+| P7c (repair) | `ac0a38a` | the format-tree distinction published as `DeviceVerdict` rather than as two Rust methods — D15's type exists for the `--json` subprocess consumer, and that consumer was being told to rebuild a conjunction N89 forbids (note **N286**) — computed on read and never cached; the three D15 claims nothing could go red on, armed — a section list, a rendered caveat and a conditional's false branch, which note **N287** enumerates because they are three different places, not three sections; and PF:17's status restated where T3 claimed the element count absorbed |
+| P8a (repair) | `bcd2826` | the frame contract asked of **both** backends: `FrameLedger` as its one home with three callers pushing into it, so the claim rides whatever backend is in front of it (note **N290**); `wall_clock_skew_us` asserted for the first time (**N297**); `RecordReport.stats` required rather than `#[serde(default)]`-ed (**N291**); and the reading of that batch that found a measurement carried as a contract and a refusal carried as an incapacity (**N298**). The R3 stream arm ran at three attached cameras and the numbers are evidence entry **E21** |
+| P8c (repair) | `8c78cf0` | the fake losing a camera the way a machine does — the removal announced per node the camera owned, `FakeBackend::device_returns` putting it back at an address its caller names, and every door into a vanished camera refusing rather than only the listing (notes **N299**, **N300**); one `hw_gone_*` recipe per D19 clause over three variables, red on an arrangement that detaches nothing (**N301**), and the protocol a contributed E-entry must follow |
+| P9 (the floor's scope) | `556e4d2` | `mutation-scope-is-decided.sh`: every product source file of every workspace member `cargo metadata` reports is in `.cargo/mutants.toml`'s `examine_globs` or carries a dated `scope-out:` marker with a reason, both directions — three P8 modules had landed in neither list and nothing could go red on it (note **N302**); D14's selector vocabulary given one home in the generated guide (**N303**, **N308**); `calibrate list`'s camera positional armed; and `systemd-units.sh` comparing the whole sum the stop takes rather than one term of it (**N304**) |
+| P7–P9 (the documents) | *this batch* | the documents reconciled against the tree the eight batches above moved. The notes' "Expected usage" preamble gains the third consumer and the identity/description trade-off — the statement docs/12 §1 and `AGENTS.md` both end by pointing at, and which was not there to point at; **N262**'s stated measurement conditions are corrected in place and its "after" figures re-measured at the viewport the rung pins, over the fixture the claim is made on; and every live count in this document, docs/12, docs/15, `AGENTS.md`, `README.md` and `phase-criteria.tsv` is measured and restated, anchored to the commit it was true at, or replaced by the thing that reconciles it |
 
-Counts at `a907975`, every one of them read out of that commit's own tree: **38 gate
-predicates** (`scripts/gates/*.sh` less the four harness files `gate_predicates` excludes), 12
-`g7` rows, 7 `g8` rows, 5 `g9` rows, and the browser rung at **28 claims and 259 assertions**,
-which are `browser/claims.json`'s own two numbers and `web_browser.rs`'s floor.
+Counts at `556e4d2`, the last commit in the table with a hash, every one of them read out of
+that commit's own tree and re-measured for this line rather than copied from another document:
+**43 gate predicates** (`scripts/gates/*.sh` less the four harness files `gate_predicates`
+excludes), **502 fail arms across 43 case files** (`selftest.sh` prints the pair on every run
+and is the authority; these are what the files hold), 24 `g7` rows, 17 `g8` rows, 9 `g9` rows,
+and the browser rung at **37 claims and 387 assertions**, which are `browser/claims.json`'s own
+two numbers and `web_browser.rs`'s floor. The docs-only batch below `556e4d2` adds no
+predicate, no case file, no criteria row and no test, so the same six figures describe the tree
+this sentence is committed into.
 
 **The commit is named rather than called "the last of those", and naming it corrected one number
 and removed another** (2026-08-20). A sentence whose antecedent is "the last row of the table
@@ -101,13 +114,28 @@ could check it, because the sentence named nothing to check it against (**N153**
 test total is not restated at all: nothing here can reconcile it without building that commit,
 and a number in this document that only a build can confirm is the same claim in a smaller
 disguise. Reconciling the live counts is P9d's, docs/7's ledger discipline applied to this
-document; what belongs here as it happens is the boundary.
+document; what belongs here as it happens is the boundary — and the eight batches from
+`1ddf472` to `556e4d2` inclusive are why the figures above moved by five predicates, twelve
+`g7` rows, ten `g8` rows and four `g9` rows without a single gate closing. The count of
+batches and the deltas are one claim, not two: `a907975` holds 38 predicates, 12 `g7` rows, 7
+`g8` rows and 5 `g9` rows, `556e4d2` holds 43, 24, 17 and 9, and dropping the last row of the
+table from the population changes three of the four figures — so "the batches between the two
+commits", which excludes the second, was the wrong population for these numbers.
 
 ## P7 — Adoption and the consumer contracts
 
 The smallest coherent story: the v3 documents take effect, and the sibling ledger's two
 highest-value requests (selection, comparison) plus the facade land — everything a
 library consumer needs before its own bring-up starts. Gate `g7`.
+
+**Where the criteria are, 2026-08-20.** The **Proves** bullets below were commitments when this
+plan was adopted; what enforces them is `scripts/gates/phase-criteria.tsv`'s `g7` block, which
+accreted row by row with the work that earned each one — the convention above — and whose size
+at `556e4d2` the execution record states. Several arrived only in the repair batches — the three
+D15 claims nothing could go red on (a section list, a rendered caveat and a conditional's
+false branch, note **N287**) and D18's facade criteria among them — so a bullet here and a
+row there are the same claim at two ages, and the tsv is the one that runs. **`g7` is not
+closed**: P7e is the close and it has not happened.
 
 ### P7a — Adoption of the v3 document set
 
@@ -189,6 +217,17 @@ notes and this document's live counts reconciled.
 Stream health, photograph comparison, and the device-loss contract — the measurement
 story. Gate `g8`.
 
+**Where the criteria are, 2026-08-20.** As P7: what enforces the **Proves** bullets below is
+`scripts/gates/phase-criteria.tsv`'s `g8` block, counted in the execution record at `556e4d2`,
+and it more than doubled after the work first landed — `7dd0c3e` left 7 rows and `556e4d2`
+holds 17. The ten in between came from three batches rather than the two a reader would guess:
+D17's luma repair (`a71748a`) armed four, D16's frame contract (`bcd2826`) five, and D19's
+device-loss recipes (`8c78cf0`) one. The D17 four are the ones an audit of this phase's growth
+would otherwise miss, and they make the paragraph's point rather than weakening it — they
+arrived because a scene scored 0.9688 against itself (**N266**), which is the same shape as a
+contract asserted against one backend and a double that could not produce three of D19's
+sentences. **`g8` is not closed**: P8d is the close.
+
 ### P8a — Stream stats (D16)
 
 **Lands:** `imaging::stream_stats::Accumulator` (+ its place beside
@@ -250,16 +289,38 @@ The web client's design pass, landed. No camera required — fake plus browser t
 the R1-web rung is this phase's terminal rung and its cost is named up front (the rung
 grows by roughly a third; every sub-milestone below prices its claims). Gate `g9`.
 
+**Where the criteria are, 2026-08-20.** As P7 and P8: the `g9` block in
+`scripts/gates/phase-criteria.tsv` carries this phase's criteria, counted in the execution
+record at `556e4d2`, and it grew after the browser work landed rather than with it: the four
+rows added since `a907975` are `/session-photo`'s consumer, the client's cited Rust items, the
+mutation floor's scope, and the write-during-suspend claim — while the sweep-time pane went
+into the wording of the row that was already there. **`g9` is not closed**: P9d is the
+close, and it is also where this document's own live counts are reconciled.
+
 ### P9a — The workbench shell and live tuning
 
-**Lands:** the two-pane viewport-height shell (sticky preview pane, independently
-scrolling control column, stacked-narrow fallback); the tuning arrangement over the
-existing guarded writes and M32/N154 identity fences; the vivid-profile layout fixture.
+**Lands:** the two-pane viewport-height shell (a preview pane nothing scrolls under —
+`100dvh` grid, `overflow: hidden`, the pane a non-scrolling item of it — an independently
+scrolling control column, and a stacked-narrow fallback where `position: sticky` is the
+mechanism because there the document *is* the scroll container); the tuning arrangement over
+the existing guarded writes and M32/N154 identity fences; the vivid-profile layout fixture.
 **Proves (browser claims):** preview and the adjusted control simultaneously visible at
 every scroll position, at the pinned viewport, against 77 controls; a clamp moves the
-slider on screen with both numbers; a write during a photo-suspend lands after resume
-(queued, not lost); the stale-panel fences hold under the new layout. **Terminal rungs:**
+slider on screen with both numbers; a write during a photo-suspend is queued rather than
+refused; the stale-panel fences hold under the new layout. **Terminal rungs:**
 R1-web. **Sizing:** one session.
+
+*The write-during-suspend bullet is narrowed, 2026-08-20 (note **N274**), and the narrowing is
+the honest half rather than a retreat.* It read "lands after resume (queued, not lost)", and
+the claim that landed asserts the queue's **effect** — the `wch_set` from a second connection
+is answered with its `{requested, applied}` pair, the device is holding the new value
+afterwards, and the pair costs one descriptor, one suspension and three streams. It does not
+assert the *ordering*, because asserting "after the resume" needs the claim to know the actor
+had already begun the photo, and nothing this daemon publishes says so: `last_used_ms` moves
+for the preview's own turns, and the fake's stream count is behind the per-camera lock the
+actor re-takes for every frame of a settle — both measured, both letting the write in first or
+never showing the window at all. It retires when `CameraActivity` carries the `busy` flag
+`engine::actor` already keeps, which is one `watch` away and is N274's named repair.
 
 ### P9b — `/session-photo` and the sample grid
 

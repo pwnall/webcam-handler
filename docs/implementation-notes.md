@@ -24,15 +24,19 @@ line cite docs/1–5; later entries cite docs/6–10.
 
 # Expected usage — who runs this, and what they are doing with it
 
-**Stated by the owner, 2026-08-12.** Design §1 says what the tool *does*; this says what it
-is *for*, which is the half that decides trade-offs. Nothing below is a new requirement — it
-is the deployment every existing requirement was implicitly about, written down so the next
-design iteration argues against the real case instead of an imagined one.
+**Stated by the owner, 2026-08-12; extended by the owner, 2026-08-18.** Design §1 says what
+the tool *does*; this says what it is *for*, which is the half that decides trade-offs.
+Nothing below is a new requirement — it is the deployment every existing requirement was
+implicitly about, written down so the next design iteration argues against the real case
+instead of an imagined one. The 2026-08-18 extension adds the third consumer below and the
+trade-off it settles (item 11); design §1's own summary and `AGENTS.md`'s "Who runs this, and
+why" are that extension in short, and both point here for the whole of it, which is why the
+whole of it has to be here.
 
 ## The deployment
 
 `wchd` runs on a computer whose one or more cameras are **pointed at a device under test**.
-Two consumers reach it, and they are shaped nothing alike:
+Three consumers reach it, and they are shaped nothing alike:
 
 - **An AI agent harness — Claude Code or similar — drives the client to take photos of the
   device under test, to check its own work.** This is the primary consumer and the
@@ -48,7 +52,20 @@ Two consumers reach it, and they are shaped nothing alike:
   *time*, and item 10 below is what that costs.
 - **The owner uses the web client from time to time**, to check up on the cameras, and to
   **calibrate them at the beginning of a development run**. Occasional, interactive,
-  supervisory.
+  supervisory. (The second half of that sentence was aspirational when it was written — the
+  shipped page could only *watch* a session the CLI drove — and D20 is where it was paid:
+  preview beside the controls, and a calibration flow a human drives end to end from the
+  page.)
+- **A sibling project's HIL harness reaches it as well** (owner, 2026-08-18, extending this
+  section; design §1.3 carries the ledger). usb-teleporter forwards USB devices over a
+  tunnel, and a consumer machine materializes a forwarded camera as `/dev/videoN`; its Tier 4
+  proof is *this* tool's conformance battery and photo pipeline run against the **forwarded**
+  camera and compared with the direct-attached original. It consumes this tool two ways at
+  once — as a **library**, pinned by rev, for its tight loops, and as a **`--json`
+  subprocess** against the committed schemas — and its six requests (FR-W1 through FR-W6)
+  bought six decisions, D14 through D19. It is unlike the first two consumers in the way that
+  matters most here: it is the first that compares this tool's answers **across machines and
+  kernels**, and item 11 below is what that costs.
 
 **The development machine is deliberately not that deployment** (owner, 2026-08-12). It
 carries every camera the owner could find — five logical cameras across four USB devices as
@@ -86,12 +103,12 @@ part of a room is more likely to hold a person than one aimed at a circuit board
    vision model, and a re-encode inserts differences the device under test did not make. A
    pipeline that silently re-encodes is a pipeline that fabricates evidence in a test.
 
-4. **The two consumers overlap, and that is the normal case rather than an exception.** The
-   owner's preview tab and the agent's photo land on one camera at the same time — that is
-   the ordinary Tuesday of this deployment, not a race to be documented. It is exactly what
-   note **N83**'s suspend/resume was built for, and this section promotes that mechanism from
-   a nicety to a core requirement. The same sentence covers exclusive streaming (D12), the
-   `Busy` holder diagnosis, and every place two callers meet one device.
+4. **The agent and the owner overlap on one camera, and that is the normal case rather than an
+   exception.** The owner's preview tab and the agent's photo land on one camera at the same
+   time — that is the ordinary Tuesday of this deployment, not a race to be documented. It is
+   exactly what note **N83**'s suspend/resume was built for, and this section promotes that
+   mechanism from a nicety to a core requirement. The same sentence covers exclusive streaming
+   (D12), the `Busy` holder diagnosis, and every place two callers meet one device.
 
 5. **Idle is the resting state.** Photographs arrive "from time to time" across a long run,
    so the camera is unheld for most of it. Open-on-first-use and close-when-idle (D12) are
@@ -162,6 +179,27 @@ part of a room is more likely to hold a person than one aimed at a circuit board
     it, what the second would have cost, and the edges neither sentence above named. The
     paragraph stays as written because it is the pricing statement the decision was made
     against, and a pricing statement rewritten after the fact is one nobody can check.
+
+11. **An answer about a device must survive the device moving** (owner, 2026-08-18, with the
+    third consumer). The first two consumers ask this tool about the machine they are sitting
+    on, where a camera's bus address and a camera's model name are equally serviceable names
+    for it. The third asks whether the camera at the far end of a tunnel is *the same camera*
+    as the one on the desk, and that question splits the vocabulary in two: **identity fields
+    say where a device is plugged in, description fields say what it is, and nothing conflates
+    them.** Both directions of the conflation produce something that reads like a real
+    answer. A field that moves with the *plug* but sits on the description side reports "the
+    forwarding changed the device" about a camera that was merely re-plugged — PF:22's node
+    renumbering is that event happening on one machine, without a tunnel in sight. A field
+    that describes the *device* but sits on the identity side is masked away, so a camera that
+    really did change compares equal and nobody is told, which is the worse of the two because
+    it is silent. Either way the rig's whole Tier 4 verdict is the difference. So the partition
+    is a *stated* one, closed by destructuring rather than by a mask somebody remembers to
+    maintain (D15); selection accepts every spelling a caller already holds instead of minting
+    one this tool prefers (D14); and frame timing is contract rather than metadata (D16),
+    because two machines can only be compared on the fields both of them mean the same
+    thing by. The consequence for a *fix*: when a field's side is unclear, the question to
+    ask is not "is this stable here" but "would the answer survive the device arriving on
+    another bus, in another kernel, on another machine".
 
 ## What would change this
 
@@ -25434,19 +25472,57 @@ own sentence, 2026-08-18); docs/13 P9a.
 `the_preview_and_the_control_being_adjusted_are_visible_together_at_every_scroll_position` and
 its narrow-viewport twin in `crates/daemon/tests/browser/client.spec.mjs`.
 
-**The measurement, before.** The P5 page was four stacked `<section>`s in one scrolling
-document. Driven through the pinned Chromium at 1440×900 against the fake replaying three
-committed profiles, the document was **3359 px tall**; `#cameras` ran 156 px from y=81,
-`#stage` 542 px from y=261, and `#controls` **2395 px from y=828** — so the control panel began
-below the fold and ran nearly three screens. Adjusting any control at all scrolled the preview
-off the top of the screen, and that is the whole of the owner's complaint: the page was a good
-*viewer* and P5's scope said so, but the session it is actually opened for is tuning.
+**The measurement, before — and the conditions it was taken under, which this entry first
+stated wrongly** (corrected in place 2026-08-20). The P5 page was four stacked `<section>`s in
+one scrolling document. Driven **by hand, outside the rung, at 1440×900** through the pinned
+Chromium against the fake replaying three committed profiles — outside the rung because no run
+of it produces that size: the config pins 1280×720 and the only claim that resizes goes to
+700×800 — the document was **3359 px tall**; `#cameras` ran 156 px from y=81, `#stage`
+542 px from y=261, and `#controls` **2395 px from y=828** — so the control panel began below
+the fold and ran nearly three screens. Adjusting any control at all scrolled the preview off
+the top of the screen, and that is the whole of the owner's complaint: the page was a good
+*viewer* and P5's scope said so, but the session it is actually opened for is tuning. **The rung pins 1280×720**
+(`crates/daemon/tests/browser/playwright.config.mjs`, and that declaration is the fact every
+sentence about the rung's viewport describes), so these figures are the *shape* of the
+complaint measured at a desk size, and never the rung's evidence. What this entry said before
+the correction was "at 1440×900" with no such distinction, and two lines later "same viewport"
+— which chained a hand measurement at one size to a claim about the other.
 
-**The measurement, after.** Same viewport, same daemon: `document.scrollHeight <= innerHeight`
-(the document does not scroll at all), the control column is its own scroll container with
-2514 px of content in an 847 px box, and the preview's bounding box does not move at any scroll
-position of that column. The shell is one `100dvh` grid: header, then two panes, the left one
-sized to fit and the right one `overflow-y: auto`.
+**The measurement, after, at the viewport the rung pins and over the fixture the claim is made
+on.** 1280×720, the 77-control `vivid` camera selected, the same daemon: `document.scrollHeight
+<= innerHeight` (the document does not scroll at all — 720 against an `innerHeight` of 720),
+the control column is its own scroll container with **10 470 px of content in a 667 px box**,
+and the preview's bounding box does not move — `top: 203` before the column is scrolled and
+`top: 203` after it is scrolled to its end. Re-measured for this correction and reproduced
+identically twice; the same page at 1440×900 gives 10 432 px in an 847 px box, and the
+ordinary 18-control camera's column measures 2849 px of content at either viewport. The shell
+is one `100dvh` grid: header, then two panes, the left one sized to fit and the right one
+`overflow-y: auto`.
+
+**Where the old pair came from is not recoverable, and that is the finding rather than a gap
+in it.** The `2514 px of content in an 847 px box` this entry used to carry is neither the
+rung's viewport nor the claim's fixture, which is the whole of what makes it wrong and is
+checkable here: 847 is a desk-sized `innerHeight`, not the pinned 720, and no configuration of
+today's page produces 2514 — the nearest one, the 18-control column at a desk size, measures
+2849. The obvious guess, that it is that configuration on an older page, cannot be checked
+against this tree either, because of where the number was committed: `git log -S'2514 px of
+content'` names `7dd0c3e`, and `crates/web/assets/index.html` at `7dd0c3e` contains no
+`id="column"` at all and `app.css` no `100dvh` — the shell landed one commit later, at
+`b3aa781`. So the figure was read off a working tree nobody can check out, and the column has
+grown twice since it was committed (`a907975` added `#flow-samples`; `e9b1633` added
+`#flow-criteria`, `#sweep-view` and its progress and sample elements). Any account of where
+2514 came from is `declared`; the measurements above are the ones this entry stands on, and a
+column height measured against an uncommitted page is the same defect as a viewport stated
+without its conditions, one layer down.
+
+**What did not move.** The rung's assertions carry no pixel constants — the column's overflow
+is asserted `> 400`, the document's height as `scrollHeight <= innerHeight + 1`, and the
+preview's box by equality with the box read before the first scroll step — so this correction
+changes no claim, no count and no generated artifact. What it changes is the sentences that
+were wrong about where their numbers came from: the two above, the page's own comment in
+`crates/web/assets/index.html`, and the claim's comment in `client.spec.mjs`, which called a
+hand measurement at 1440×900 "this viewport" two lines after defining that as the pinned
+one.
 
 **Three things that had to be got right and would have looked fine wrong.**
 `min-height: 0` on both panes — a grid item's default is `auto`, "as tall as my content", so a
@@ -26441,7 +26517,9 @@ the device did not keep it"*, at 128 where 64 was asked for.
 **Retires when:** the daemon publishes a per-camera "the actor is inside a command" observable
 — the `busy` flag `engine::actor`'s `Live` already keeps and `CameraActivity` does not carry.
 With that, the ordering half is one `watch` away and this claim should grow it. Until then the
-plan's wording is stronger than anything that can be driven, and docs/13 P9a says so.
+plan's wording would be stronger than anything that can be driven, which is why docs/13's P9a
+bullet was narrowed to the effect on 2026-08-20 and carries this entry's number where it says
+so.
 
 ## N275 — A route whose only consumer was five string literals
 

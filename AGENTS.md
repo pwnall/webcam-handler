@@ -85,8 +85,10 @@ notes current; the phase review gets its own session.
 
 ## Read before changing anything
 
-- `docs/implementation-notes.md` — case law: N-entries (through N255 at this writing),
-  PF-entries (design §1.2's registry, PF:1–28), dated append-only E-entries. Do not
+- `docs/implementation-notes.md` — case law: numbered N-entries, PF-entries continuing
+  design §1.2's registry, dated append-only E-entries. **Read the last entry of each kind out
+  of the file before citing or minting a number** — the highest N moves most sessions, and a
+  count written here would be a claim nothing reconciles (N153, N158). Do not
   "fix" entries recorded there; record new justified deviations as notes; retire an
   entry only on empirical disproof. Citations of docs/1–10 in older entries resolve
   under `docs/historical/` (numbering preserved).

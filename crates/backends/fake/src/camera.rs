@@ -898,8 +898,8 @@ fn negotiate(state: &CameraState, request: &StreamRequest) -> Result<NegotiatedS
     // **What dropping the name costs when `usable` is empty**, which is the second
     // behavioural delta of this repair rather than the one it was first credited with (note
     // **N138**): the resolver then refuses with `available: []`, where the deleted guard
-    // refused naming every format the device has. Unreachable today — every format in the
-    // five committed profiles and in `synthetic-basic.json` is synthesizable — and the
+    // refused naming every format the device has. Unreachable today — every format in every
+    // committed profile and in `synthetic-basic.json` is synthesizable — and the
     // *sentence* is honest either way since `format_formats`' empty arm stopped claiming
     // "the capture node enumerated no formats", which was false for exactly this caller. A
     // camera whose whole enumeration this crate cannot draw has nothing to offer a stream,

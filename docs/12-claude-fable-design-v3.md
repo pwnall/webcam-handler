@@ -1379,12 +1379,24 @@ Regenerated at this revision, not accreted (rubric rule 4):
 6. **Privacy canary limits**: the frame gate sniffs known formats and walks two
    containers; a frame in an unrecognized envelope passes it; review carries that half.
 7. **The browser rung drives Chromium only**, by ruling; Firefox/Safari are unexercised.
-8. **All hardware evidence is one machine, one kernel, and the cameras attached to it.**
-   Five profiles committed; four cameras plus vivid at E18. The camera count moves; the
-   machine count has not, and the machine count is what bounds the claim. **D19 and D15
-   are the first designed-for path out** — a second machine, a second kernel, and the
-   comparison vocabulary to say what carried over — but until the partner rig runs, that
-   is a design, not evidence.
+8. **All hardware evidence is one machine, one kernel series, and the cameras attached
+   to it.** Every profile in `corpus/` was captured there, and how many there are is
+   what `corpus-floor.sh` counts on every run rather than a figure stated here, because
+   that figure has already gone stale once. "One kernel series" rather than "one kernel"
+   because the host has already taken a point upgrade underneath the corpus and the
+   tree records both sides of it: the five camera profiles carry `provenance.kernel =
+   7.0.0-29-generic`, `corpus/profiles/vivid.json` carries `7.0.0-30-generic`, and
+   every evidence entry that names a kernel splits the same way — 7.0.0-29-generic
+   through E18, 7.0.0-30-generic at E19, E20 and E21. Nothing here compares an answer
+   across that boundary, so the upgrade is not evidence about portability either way;
+   it is only the reason the flat claim would be refutable by one `grep`. The camera
+   count moves and the kernel takes point releases; the machine count has not moved,
+   and the machine count is what bounds the claim. **D19 and D15 are the first
+   designed-for path out** — a second machine, a second kernel *line*, and the
+   comparison vocabulary to say what carried over — but until the partner rig runs,
+   that is a design, not evidence. (`vivid.json` was captured for docs/13 P9b's layout
+   fixture and entered the tree at `7dd0c3e`; E18 is the evidence run that first
+   exercised the driver, which is a different date and a different claim.)
 9. **Mid-stream device loss is stated, modeled, and locally unmeasurable.** The helper's
    interlock (§2.13) keeps real cycles camera-closed, so `DeviceGone` mid-stream is the
    fake's scripted fault — **and, new at v3, a stated contract (D19) with committed

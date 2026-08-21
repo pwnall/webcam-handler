@@ -1802,9 +1802,11 @@ test("the preview and the control being adjusted are visible together at every s
   // visible at every scroll position of the control column, at the rung's pinned viewport
   // size.* The owner's session at the start of a development run is tuning — eyes on the
   // preview, hands on the controls — and before this shell the page was a single scrolling
-  // document 3359px tall at this viewport, whose control panel began below the fold and ran
-  // 2395px: adjusting anything at all meant scrolling the picture off the screen (note
-  // **N262**).
+  // document: 3359px tall, its control panel beginning below the fold and running 2395px, so
+  // adjusting anything at all meant scrolling the picture off the screen. Those three figures
+  // were measured by hand at 1440x900, not at the pinned viewport this claim runs at; note
+  // **N262** says so where it states them, and states what the shell measures at the pinned
+  // one instead.
   //
   // The camera is the **77-control** one on purpose. The ordinary fixture's eighteen very
   // nearly fit on a screen, so a layout claim made against it would pass against a page with

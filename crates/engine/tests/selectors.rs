@@ -3,10 +3,15 @@
 //! The unit arms in `engine::resolve` drive hand-built fixtures, which is the right shape for
 //! "does the matcher match". This file asks the neighbouring question that only real captured
 //! devices can answer: **do the five spellings behave the way D14 says on the machines this
-//! project has actually seen?** The corpus is five profiles from four physical cameras — a
-//! Chicony whose two logical cameras share one USB id and one serial \[PF:13, PF:8\], an
-//! OBSBOT that reports no serial at all, a four-node Dell \[PF:19\] and a Logitech — replayed
-//! through the fake as one machine.
+//! project has actually seen?** The fixture is *every* committed profile — `corpus::load_all`
+//! walks the directory and filters nothing, so the population is whatever `corpus/profiles/`
+//! holds rather than a number this comment would have to keep. What it holds today is the
+//! four physical cameras these arms are about — a Chicony whose two logical cameras share one
+//! USB id and one serial \[PF:13, PF:8\], an OBSBOT that reports no serial at all, a
+//! four-node Dell \[PF:19\] and a Logitech — and the kernel-virtual `vivid` capture beside
+//! them, all replayed through the fake as one machine. The arms below quantify over that
+//! population rather than counting it, which is why a profile joining the corpus makes this
+//! file's host bigger and none of its claims wrong.
 //!
 //! That last word is the point. Replaying every committed profile at once builds a host no
 //! desk has ever had, and its collisions are *the fixtures*: the corpus was captured on
