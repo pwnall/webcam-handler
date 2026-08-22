@@ -291,6 +291,17 @@ miri:
 # arguments reach cargo-mutants, which is how a triage session narrows a re-run
 # (`just mutants -F store.rs`); the scope itself lives in `.cargo/mutants.toml`.
 #
+# **It wants a committed, pushed checkout before it starts, and refuses without one** (owner
+# ruling, 2026-08-21): hours of machine time spent on work that exists in exactly one place is
+# how that work gets lost, so commit and push, then run this. A narrowed re-run is this mode
+# too and is refused on the same terms, because how long a narrowing takes is not something
+# the script can know. The refusal exits **75** — `EX_TEMPFAIL`, the "no verdict" this job
+# already spells that way — and it is **not a finding**: no mutant was generated, so nothing
+# was said about the code or the register. `WCH_MUTANTS_ALLOW_UNPUSHED=1` starts the run anyway
+# and prints a named, counted skip saying what it accepts, for the deliberate long run on
+# unpushed work. The check reads local remote-tracking refs and calls nothing over the network;
+# `scripts/mutants.sh` argues the whole of it.
+#
 # The mutation floor in full — hours, the only mode that may answer PASS, and a G4 criterion.
 mutants *args:
     ./scripts/mutants.sh {{args}}
@@ -308,6 +319,12 @@ mutants *args:
 #
 # It needs a previous run's `target/mutants.out/` to skip anything; with none it is simply the
 # full run under a different verdict word.
+#
+# **The full run's committed-and-pushed precondition deliberately does not reach this mode.**
+# That rule is about hours of machine time spent on work that exists in one place; this mode
+# costs minutes, and checking a fix *before* committing it is the whole reason it exists. A
+# triage tool that demanded a push first is a triage tool nobody would run, so this one starts
+# on whatever is in the tree.
 #
 # The mutation floor over what a previous run left open — minutes, and it answers PARTIAL.
 mutants-iterate *args:

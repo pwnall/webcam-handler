@@ -150,9 +150,12 @@ gate_socket_scratch_root() {
 # screenshots a person opens *after* a failing run, and where a hardware session parks its
 # transcripts, and a sweep that took those would be a sweep nobody dares run.
 #
-# What it does not cover is named in note N84: a caller's own $WCH_GATE_SCRATCH somewhere
-# else, cargo-mutants' `cargo-mutants-*` build trees, and anything under either root that a
-# person named something other than `wch…`.
+# What it does not cover is named in note N84, as that note's own 2026-08-21 amendment leaves
+# the list: a caller's own $WCH_GATE_SCRATCH somewhere else, and anything under either root
+# that a person named something other than `wch…`. cargo-mutants' `cargo-mutants-*` build
+# trees came off that list when the owner moved the mutation floor's build root under this one
+# (note N347), because what this takes is the `wch…` directory above them — and they go back
+# on it for whoever points $WCH_MUTANTS_BUILD_ROOT at another filesystem.
 gate_scratch_sweep() {
     local age="${1:-1440}" root swept=0 entry plural='ies'
     for root in "$(gate_scratch_root)" "$(gate_socket_scratch_root)"; do

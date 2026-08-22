@@ -93,7 +93,7 @@ fails on a predicate with no case file. Full rationale: each script's header.
 | `luma-has-one-home.sh` | colour becomes brightness in one place: one declaration, no borrowed conversion, no second coefficient set, consumers reconciled both ways |
 | `msrv-sync.sh` | the MSRV is one fact and every copy agrees |
 | `mutation-scope-is-decided.sh` | every product module is in the floor's scope or excluded from it by a marker with a reason; no entry and no marker outlives the module it named |
-| `mutation-verdict.sh` | the mutation floor keeps PASS / FAIL / NO-VERDICT apart, and the phase runner preserves the distinction |
+| `mutation-verdict.sh` | the mutation floor keeps PASS / FAIL / NO-VERDICT apart, and the phase runner preserves the distinction; and the full run refuses to start on work that exists only on this machine — committed and pushed is the precondition, `--iterate` is exempt, the refusal is a NO-VERDICT and never a finding, and `WCH_MUTANTS_ALLOW_UNPUSHED=1` starts the run with a counted, named skip |
 | `no-external-fetch-in-web.sh` | the web client loads nothing off-origin |
 | `no-frame-bytes-in-repo.sh` | no camera frames in the repository; fixtures carry provenance and bounded extents, containers walked |
 | `oracle-rung-accounting.sh` | the oracle rung's four verdicts stay apart; declines reprint their reasons; line shapes derived from the product |
@@ -151,7 +151,38 @@ gate is run; a figure for them written here would be stale by the next sub-miles
   real) — so a moved verdict is **a prompt to apply the mutant by hand on an idle
   machine, never a finding**, `mutants.sh` says so where the number is chosen, and the
   honest jobs figure on this machine is 1 (13–19 h) with the default left at `nproc` as
-  an owner decision recorded in docs/13's trigger table.
+  an owner decision recorded in docs/13's trigger table. **The build trees live under
+  `target/`** (owner ruling, 2026-08-21), which is where every other piece of test scratch
+  has lived since N84 and where this job alone was exempt: a run that fills a RAM-backed
+  `tmpfs` competes with the machine's memory and can take the machine with it, and a
+  machine the owner cannot reach outranks a build that is merely slow. The price the
+  exemption measured is kept rather than disputed — E7's seven mutants a minute with the
+  build trees on `tmpfs` against under one on the disk that holds `target/` — but it is
+  **not quoted as what the move costs**, because N251's 2026-08-18 run put the trees off
+  the `tmpfs` and finished 1132 mutants in 2h23, which is E7's `tmpfs` rate rather than its
+  disk rate; `mutants.sh` carries both numbers and says the price is unmeasured on the
+  current workspace, which the ruling does not depend on. `WCH_MUTANTS_BUILD_ROOT` remains
+  the escape for whoever wants the `tmpfs` and accepts the risk. The reserve that trims the
+  job count to what the root can hold does not make `tmpfs` safe: it divides by a per-job
+  figure the growing workspace has outgrown twice, N66 the first time and again on
+  2026-08-21, when a `just mutants` run trimmed to three jobs on the reserve's own advice
+  and still died of `Disk quota exceeded` 337 mutants into 1131, with a leftover build tree
+  measuring half a gibibyte more than the figure it had been divided by — and per N52 a
+  one-shot `df` cannot see what shares the filesystem afterwards, which no current figure
+  fixes. **The same day's second ruling is a precondition on starting** (owner, 2026-08-21):
+  `just mutants` — the full floor, hours, the only mode that may answer PASS — refuses
+  to run unless the checkout is committed and that commit is contained by a
+  remote-tracking ref, because hours of machine time spent on work that exists in
+  exactly one place is how the work is lost. `just mutants-iterate` carries no such
+  precondition, since dirty-tree triage is the ordinary use the tree recording already
+  defends, and the two rules are about different things — result validity there, work
+  preservation here. The check reads local refs and calls nothing over the network, so
+  the suite stays offline; the refusal exits `$GATE_NO_VERDICT` rather than 1, because a
+  precondition nobody met generated no mutant and disproved no acceptance and filing it
+  where a survivor lives is N66's lesson; and `WCH_MUTANTS_ALLOW_UNPUSHED=1` starts the
+  run anyway with a counted, named skip, in the register `WCH_NO_MOTION=1` holds.
+  `mutation-verdict.sh`'s claim 5 is what goes red on any of it; the argument lives in
+  `mutants.sh`'s header and the note that lands the ruling.
 
 ## Part 2 — Gates commissioned by the v3 phases
 

@@ -12565,6 +12565,17 @@ stated rather than discovered later:
   take a concurrent run's scratch; the automatic call from `selftest.sh` uses a day, which is
   longer than anything here and shorter than an accumulation nobody notices.
 
+**Amended 2026-08-21 by the owner's ruling that withdrew this entry's own exception** (note
+**N347**). The first two bullets above are no longer true of the tree and are left standing
+because this file is append-only and they are what was true when they were written. The mutation
+floor's build root is under `target/wch-scratch` now, so the sweep reaches it and reaches the
+`cargo-mutants-*` trees inside it — the residual this entry recorded rather than pretended
+otherwise about is closed by the root moving, not by the sweep learning a new name. The 7×
+this entry cites is E7's and was superseded by **N251**'s own on-disk run before the ruling
+arrived: 1132 mutants in 2h23 at eight jobs, which is the tmpfs rate rather than a seventh of it.
+What the ruling turned on is not speed at all but that this host's `/tmp` is a RAM-backed tmpfs,
+so a run that fills it takes the machine rather than the build.
+
 ### What this resolves, and it is E15's first finding
 
 E15 recorded a collision: `.gitignore` said test captures land in `/scratch/`, and
@@ -31690,3 +31701,296 @@ is for.
 
 **Retires when:** the rung is given a scheduling posture and measured either side of it, or a
 mechanism is found that makes the budget unnecessary.
+
+## N347 — The mutation floor's build trees come under `target/`, because the exemption was argued on speed and the ruling is about the machine surviving the run
+
+**The ruling (owner, 2026-08-21):**
+
+> the mutation floor's build trees run under `target/`, never in `/tmp` — a mutants run "could
+> crash the system and make the machine inaccessible", and in the limit wear the SSD and cost the
+> code.
+
+**Doc:** AGENTS' mutation-floor paragraph ("hours not minutes; never a `just ci` step"), and notes
+**N84** (the 2026-08-12 ruling that put test scratch under `target/`, and the one exemption it
+deliberately left standing), **N66** (the floor spent the whole filesystem and spelled the
+shortfall as a FAIL), **N68** (the floor's third outcome), **N52** and **N60** (a verdict that is a
+function of the machine, and what a floor that cries wolf costs), **N251** (the floor's jobs
+question, still open, and the 2h23 run off the tmpfs that this entry reconciles E7 against).
+
+**Repo:** `scripts/mutants.sh`'s build-root default and the paragraph that argues it. One of its
+two `# wch-scratch-exempt:` markers goes with the old default, because the line that read
+`${TMPDIR:-/tmp}` no longer names either spelling; the other stays, because
+`export TMPDIR="$build_root"` is still how cargo-mutants is told where to build and still matches
+the `TMPDIR|/tmp([/"']|$)` that `scratch-has-one-home.sh` walks every shell script for. That
+gate's header sentence counts three *arguments* rather than three marked lines — the socket root,
+`TempRuntimeDir`'s `sun_path` budget, and the mutation floor's build root — and all three survive
+the move; the gate printed three and passed after it. What does move is the other half of N84's
+residual list: `scripts/gates/lib.sh` and `scripts/scratch-sweep.sh` both name cargo-mutants'
+`cargo-mutants-*` trees as what the sweep cannot reach, and under the new default it reaches them,
+because what it takes is the `wch…` directory above them. Those two sentences come down in the
+same commit or they are wrong.
+
+### The axis is different from the one the exemption was argued on, which is why it wins rather than ties
+
+`mutants.sh` chose `$TMPDIR` on a measurement of throughput, and nothing here disputes that
+measurement. The owner's reason is not throughput at all: the floor is the one job in this
+repository that runs for hours writing gigabytes per worker, `/tmp` on this host is a **16 GiB
+tmpfs and therefore RAM-backed**, and a job that fills it is competing with the machine's memory
+rather than with its disk. What that buys, in the bad case, is not a slow run — it is a host that
+has to be power-cycled, an SSD written for nothing, and uncommitted work lost with the session.
+Speed and machine safety are not on the same scale, so this is not a trade being re-priced; it is
+one consideration being outranked by another that the earlier argument never weighed.
+
+### What is being reversed, with its measurement intact
+
+The exemption is the one thing N84's ruling deliberately did not move, and `mutants.sh` says so in
+its own words:
+
+> **The one thing the 2026-08-12 ruling deliberately did not move** (note N84). That ruling put
+> test scratch under `target/` because a leak filled a tmpfs; this is not that leak and moving it
+> would be a knowing 7× regression in the measurement two paragraphs up — the same run with its
+> build directories on the disk that holds `target/` went from about seven mutants a minute to
+> under one.
+
+**That number stays on the record, here, because a reversal that deletes the measurement it lost to
+is a reversal nobody can re-litigate.** About seven mutants a minute on the tmpfs against under one
+on the disk holding `target/`, measured on this machine on 2026-08-09 over 410 mutants at five
+jobs, is what the exception was bought with, and it is still the reason anybody would want the
+tmpfs back.
+
+**It is not, however, what the move costs today, and this entry declines to say that it is.** N251
+records a run of 2026-08-18 that pointed `WCH_MUTANTS_BUILD_ROOT` off the tmpfs — at "the 314 GiB
+filesystem", which is how `mutants.sh` names a root, by the free space its own `df` prints — and
+finished **1132 mutants in 2h23 at eight jobs**, about eight a minute. That is E7's *tmpfs* rate on
+a root that was not the tmpfs. N251 does not name the path, and the inference should be read as one:
+this host mounts exactly one non-tmpfs data filesystem, `/dev/nvme0n1p5` at `/`, and it is the one
+`target/` is on. The two runs differ in job count, in scope and in month, so neither refutes the
+other cleanly; what is true is that **nobody has compared the two roots on the current workspace**,
+and until somebody does, "7×" is a number from a run in August that a later run does not reproduce.
+Quoting it as the price of this ruling would be the same mistake in the other direction. The ruling
+does not need it: an argument that survives the worst price ever quoted survives the real one.
+
+### Today's evidence, which is N66 recurring in the same shape
+
+`just mutants` as shipped, run on this host during the 2026-08-21 gate closes. The guard N66 added
+worked and said so:
+
+    /tmp has 13 GiB free, so 3 job(s) rather than 8 (about 3 GiB each, 3 GiB held back)
+
+The baseline built and tested — 109 s build, 75 s test — and then a worker died:
+
+    ERROR Worker thread failed: failed to overwrite "/tmp/cargo-mutants-webcam-handler-VIvqdP.tmp/crates/engine/src/session.rs"
+    Caused by: Disk quota exceeded (os error 122)
+
+It had processed **337 of 1131 mutants**: 154 caught, 183 unviable, 0 missed — the counts are
+`caught.txt`, `unviable.txt` and `missed.txt` in that run's output directory, and the baseline
+timings are its `debug.log`. A build tree that run left behind, measured on the tmpfs before the
+trees were swept, was **3.5 GiB** against the script's `per_job_gib=3`.
+
+**Two causes were present, and N52 already named the second.** That entry read the identical death
+at the P4c boundary and found it was not the figure at all: the `df` is sampled once at the start
+and cannot see what arrives afterwards, and this `/tmp` was also holding the session's own
+scratchpad, which grew all day beside the run. So a current per-job figure does not close the hole
+either — on a filesystem shared with everything else on the machine, no one-shot budget can — and
+that is an argument about the tmpfs rather than about the arithmetic.
+
+So the reserve did not make the tmpfs path safe, and the reason is exactly N66's finding arriving a
+second time: **the budget is only as honest as the figure it divides by, and that figure describes
+a workspace that keeps growing.** N66 held back one job's worth so the arithmetic would stop
+spending the whole filesystem; it did not, and could not, make a stale per-job figure current. The
+honest reading is that a per-job estimate is a moving target — measured once, wrong by the next
+crate — and a RAM-backed filesystem sized in the same order as one build tree is an unforgiving
+place to be wrong about one. On the disk that holds `target/` the same 17 % error costs nothing at
+all, because the reserve arithmetic there divides 135 GiB rather than 13.
+
+So `per_job_gib` moves from three to four in the same commit, and N66's clause is why that is
+allowed rather than why it is forbidden. The clause is that the figure stays a *measurement* —
+headroom bought by decree stops it being one — and four is today's 3.5 GiB rounded up, which the
+arithmetic forces (`fits` is integer division) and which the evidence points at, since the
+direction that has now failed twice is the one where the figure is smaller than a tree. It is a
+floor and not a ceiling: the run that produced it died before it finished, so its build tree had
+not finished growing either, and the next run that dies on space is evidence this number moved
+again rather than evidence about the code. On the new root the number decides almost nothing —
+`(135 - 4) / 4` is thirty-two jobs against the eight anybody asks for — and that is the point:
+what changes today is that a stale per-job figure can no longer decide whether the machine
+survives the run. It still decides how many jobs the escape hatch gets.
+
+### The price, stated as the open question it is
+
+The honest bound is wide and it is stated wide. If E7's disk rate still described this workspace,
+1131 mutants at under one a minute would be a run in the high teens of hours; if N251's 2h23 does,
+the ruling costs almost nothing, because that run's build trees were already off the tmpfs.
+Somewhere between "no change" and "most of a day" is where the floor now sits, for a G4 dev tool
+that is deliberately not a `just ci` step and whose absence is already a named, counted skip.
+Either end is inside AGENTS' "hours not minutes". **The measurement that would close this is one
+run of the shipped default, timed** — the first full run under the new build root — and it is
+cheap to take, because it is a run somebody has to make anyway before the next gate close.
+
+**It also interacts with the question N251 left open, and that question is not what was decided
+today.** N251's arithmetic says the honest `WCH_MUTANTS_JOBS` on this machine is 1, because the
+daemon and client integration suites still settle on a real clock and lose their deadlines under
+contention, and it prices that at 13–19 hours pending the owner's ruling. Today's ruling is about
+**where** the trees live, not **how many** of them run at once. Nobody should read this entry as
+having settled the jobs default; the two costs compound in a way nothing here has measured, and
+the first run under the new root is the measurement that would tell us by how much.
+
+**Retires when:** a build root exists on this machine that is large, fast and not RAM-backed, and
+the owner rules on it with the throughput measured either side — or the floor's build trees stop
+being gigabytes each, at which point the whole argument is about a filesystem nobody can fill.
+Until then, re-read this entry before proposing `$TMPDIR` again: the 7× was measured, it is not
+reproduced by the later run recorded above, and it was never the thing that decided this — which is
+why an unreconciled throughput number does not reopen the question, and why a timed run under the
+new root would be worth having anyway.
+
+## N348 — The full mutation floor refuses to start on work that exists only on this machine, because the run that takes the machine down takes the work with it
+
+**The ruling (owner, 2026-08-21):**
+
+> a mutation-floor run may take as long as it takes, provided the tree is committed and pushed
+> right before it starts.
+
+**Doc:** AGENTS' mutation-floor paragraph ("hours not minutes; never a `just ci` step") and rule 3
+("never silence"), and notes **N347** (the same day's first ruling about this job, which moved the
+floor's build trees under `target/`), **N68** (the floor's three outcomes and the exit code the
+third one gets), **N66** (the machine's shortfall spelled as a statement about the code), **N60**
+(what a gate that cries wolf costs), **N251** (the floor's jobs question and the 2h23 run that
+prices an hours-long run today) and **N3** (a rule that constrains a developer's habits is written
+global with named exceptions, because `grep` finds every exception and each one carries a reason).
+
+**Repo:** `scripts/mutants.sh`'s new header section, "The full run refuses to start on work that
+exists only on this machine", which carries the argument; `refuse_unless_committed_and_pushed`,
+`refuse` and `preflight_remedy`, which are the mechanics; the `iterating` decision, moved up to
+where the precondition can ask which mode this is rather than learning it later from the block that
+forwards the flag. Driven by `scripts/gates/mutation-verdict.sh`'s **claim 5** and the five fail
+arms its case file gained, which take the gate suite from 533 fail arms to **538, across 43 case
+files**.
+
+### The axis is N347's neighbour, and the two rulings are one argument in two steps
+
+N347 is about the machine surviving the run: the floor is the one job here that runs for hours
+writing gigabytes per worker, `/tmp` on this host is a 16 GiB tmpfs and therefore RAM-backed, and a
+run that fills it competes with the machine's memory rather than with its disk. This note is about
+what that failure costs when it happens anyway. N347 moves the build trees to a filesystem that can
+hold them; **this note assumes the crash it did not prevent and asks where the work is then.** The
+answer the owner gives is that hours of machine time spent on a checkout with no copy anywhere else
+is how the work gets lost — the run does not have to succeed for the loss to happen, it only has to
+take the host with it, and a power cycle is not a thing a session's uncommitted work survives.
+
+So the two rulings are not the same rule twice. They rest on the same fact — this job is the long,
+heavy one — and they answer different questions about it: N347 lowers the chance of the bad event,
+this note bounds its damage. Neither substitutes for the other, and a reader who finds only one of
+them has half the argument.
+
+### The tension it reconciles, because a later reader finds both paragraphs in one file
+
+`scripts/mutants.sh` already refuses to assert a clean tree, deliberately and in as many words, in
+the block N68 added:
+
+> Recorded and compared, not asserted clean, for `selftest.sh`'s reason: running this on a dirty
+> tree is ordinary — it is how you check a fix before committing it — and "you had uncommitted
+> work" is not a finding. What is a finding is that the tree is not the one the run started on.
+
+**Nothing here withdraws a word of that, because it is an argument about result validity**: one
+mutation verdict describes one tree, and the question it asks is whether the tree at the end is the
+tree at the start. Uncommitted work does not make a verdict wrong. The new precondition asks a
+question that block never asked and could not have answered — not "is this the same tree", but
+"does this work exist anywhere other than the machine that is about to spend hours stressing
+itself" — and that is a question about work preservation, which is not a property of the verdict at
+all.
+
+The split lands on the line the two recipes already draw. **`just mutants`** — the full floor,
+hours, the only mode that may answer PASS — refuses to start unless the checkout is committed and
+that commit exists on a remote. A narrowed re-run (`just mutants -F store.rs`) is still this mode
+and is still refused, because how long a narrowing takes is not something the script can know and a
+caller who does know has the escape below. **`just mutants-iterate`, and `--iterate` however it
+arrives** — the triage tool, minutes, run after each development stage — carries no such
+precondition, and that is precisely the mode the recording block was defending: checking a fix
+*before* committing it is what iterate mode exists for, and a triage tool that demanded a push
+first is a triage tool nobody runs.
+
+### Why it refuses rather than skipping, and why the exit code is 75
+
+It refuses, which is `just rung-vivid-managed`'s idiom and AGENTS rule 3's reason. A caller who
+typed `just mutants` asked for the full floor; answering zero would be a skip that reads as a pass,
+and the floor is the one job in this repository whose whole value is that it cannot be quietly
+disarmed. Like that recipe, the refusal names its remedy — commit and push, then re-run — because a
+refusal that does not say what to do next is a wall.
+
+The exit code is **`$GATE_NO_VERDICT`, 75, `EX_TEMPFAIL`**, reusing `no_verdict()` so the refusal
+carries the trailer that outcome was built for: this run answered nothing, no mutant was generated,
+no survivor was seen, no acceptance was disproved. A precondition nobody met is not a resource
+shortfall and does not claim to be one, but `EX_TEMPFAIL`'s own sentence — "temporary failure; the
+user is invited to retry" — is exactly the claim, and here the retry is one `git push` away.
+Spelling it **1** would file a refusal to start in the column a surviving unaccepted mutant is filed
+in, which is N66's whole lesson wearing new clothes; spelling it **0** would be rule 3's skip that
+reads as a pass. N68 built the three-outcome vocabulary for this shape and this is its first new
+member since.
+
+Where it sits in the run matters too, and both ends of that are deliberate: **after** the
+cargo-mutants tool check, because a machine that cannot run the floor at all has no hours to lose to
+it and a refusal there would be N60's wolf; **before** the scope listing, the space budget and the
+baseline build, because a run that may not start should not first spend a minute finding that out.
+
+### What the check can see, and what it cannot
+
+It reads the local remote-tracking refs — `git for-each-ref --contains <HEAD> refs/remotes/` — and
+calls nothing over the network, because the rest of this suite is offline by construction. A push is
+exactly what updates `refs/remotes/…`, so a commit contained by one of them is a commit that has
+left this machine. The uncommitted half is read out of the tree state the N68 recording already
+sampled, rather than re-sampled, because a refusal has to describe the state the run would have
+started from and two `git status` calls are two states; an untracked file counts, because untracked
+work is the work with nowhere else to be.
+
+**The limit is the other side of the same mechanism, and it is stated rather than hidden**: this
+trusts the last push or fetch made from this checkout, and it cannot see a remote somebody else has
+moved, or one that has since lost the ref. It can therefore say "this has been pushed" about a
+commit whose remote no longer holds it. That is the right side to err on, because the loss this
+exists to prevent is work that was never pushed at all rather than work whose remote has drifted,
+and closing the gap would cost the offline property the whole suite is built on.
+
+### The escape, and the register it borrows
+
+`WCH_MUTANTS_ALLOW_UNPUSHED=1` starts the full run anyway. It is in the register `WCH_NO_MOTION=1`
+holds for the motor suites, and it has two halves, of which the second is the one easy to drop: a
+deliberate long run on unpushed work stays possible, and it **says out loud, counted, what it is
+accepting** — a named skip stating that hours are being spent on a checkout that may have no copy
+off this machine. This is N3's shape applied to a habit rather than to a lint: the rule is written
+for everybody and the exceptions are named where a reader finds them, rather than the rule being
+weakened so nobody has to declare one. What the escape may not do is happen quietly, which is why
+the skip and not just the start is asserted.
+
+### How it is driven, and the one claim the recorded-run seam cannot reach
+
+Claim 5 of `scripts/gates/mutation-verdict.sh`, with five new fail arms in its case file, each
+watched red before the repair and green after. The five are the five ways a rule of this shape goes
+wrong: it does not fire; it fires on everything; it swallows the mode it was never meant to cover;
+its escape does not open; its escape opens silently. The second of those is the control the rest
+rests on — a precondition that refused every checkout would satisfy every `refused` arm above it and
+make the floor unusable, which is N60's bill again.
+
+**This is the one claim `$WCH_MUTANTS_CLASSIFY` cannot drive**, and the reason is the subject
+itself: a recorded result set is the mode that never asks whether the run may begin, so the seam
+N68 built for the verdict has nothing to say about the precondition. The fixtures are therefore
+three tiny git repositories, each with the floor under test installed at `scripts/mutants.sh` inside
+it — which is where the floor resolves its own tree from, `git -C "$here"` rather than `$PWD`, so a
+fixture repository is the only honest way to hand it a tree whose state the arm decides. They differ
+in one fact each: committed and on a remote, committed and on no remote, on a remote with
+uncommitted work beside it. **The push is simulated offline**, by writing what a push leaves behind
+— `git update-ref refs/remotes/origin/main` — which is the same reading of `refs/remotes/…` the
+check itself makes, from the other end.
+
+**And no mutation run may start inside a gate**, which is what the `cargo` shim is for: a floor that
+passes the precondition goes on to list the scope, and on a machine with cargo-mutants installed
+that is the first minute of an hours-long job inside a predicate that is supposed to take seconds.
+The shim answers `mutants --version` and `mutants --list-files` and refuses everything else, and its
+empty scope is a *finding* the shipped floor already has words for. So "it started" is read as "it
+reached the scope check and said so", which is a stronger claim than "it did not refuse" and stops
+one line short of anything expensive.
+
+**Retires when:** the floor stops being the job that runs for hours — the jobs question N251 leaves
+open could change its shape but not its order of magnitude — or a checkout on this machine is
+continuously replicated somewhere else by something other than a push, at which point the refs this
+reads stop being the record of where the work is. Until then, re-read this entry before proposing
+that the tree-recording block and this precondition be merged: they read the same `git` state and
+answer two different questions, and collapsing them would either make a dirty tree a finding, which
+N68 refuses, or let a long run start on work nothing else holds, which this note is.

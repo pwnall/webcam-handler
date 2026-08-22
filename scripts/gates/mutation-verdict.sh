@@ -358,4 +358,203 @@ gate_checked "$phase_rows" "phase-gate run(s) proving a no-verdict criterion is 
 gate_require_nonzero "$phase_rows" "phase-gate runs"
 gate_note "the tree-move claim was exercised $moved_checked time(s)"
 
+# ------------------------------------------------------------------ claim 5
+#
+# The full floor refuses to start on work that exists only on this machine, and the triage mode
+# does not — the owner's ruling of 2026-08-21, whose reasoning `scripts/mutants.sh`'s header
+# carries. It comes after the phase claim because it is a different question about the same
+# program: claims 1 to 4 are about the verdict a run produced, and this one is about whether the
+# run may begin at all.
+#
+# **The subject makes this the one claim that cannot be driven through $WCH_MUTANTS_CLASSIFY**,
+# because a recorded result set is exactly the mode that never asks. So the fixture here is a
+# whole (tiny) git repository, with the floor under test installed at `scripts/mutants.sh`
+# inside it — which is where the floor resolves its own tree from, `git -C "$here"` rather than
+# `$PWD`, so a fixture repository is the only honest way to hand it a tree whose state this arm
+# decides. Three of them, differing in one fact each: committed and on a remote, committed and
+# on no remote, on a remote with uncommitted work beside it.
+#
+# **And no mutation run may start here, which is the reason for the `cargo` shim.** A floor that
+# passes the precondition goes on to list the scope, and on a machine with cargo-mutants
+# installed that is the first minute of an hours-long job — inside a gate that is supposed to
+# take seconds. So these runs get a `PATH` whose `cargo` answers `mutants --version` and
+# `mutants --list-files` and refuses everything else, and an empty scope is a *finding* the
+# shipped floor already has words for. "It started" is therefore read as "it reached the scope
+# check and said so", which is a stronger claim than "it did not refuse" and stops one line
+# earlier than anything expensive.
+preflight_runs=0
+if gate_tree_watchable "$checkout"; then
+    preflight_bin="$scratch/no-real-cargo"
+    mkdir -p "$preflight_bin"
+    cat >"$preflight_bin/cargo" <<'SHIM'
+#!/usr/bin/env bash
+# A `cargo` that can answer the two questions the floor asks before it starts, and nothing
+# else. `--list-files` prints no file, so a floor that got past the precondition stops at the
+# empty-scope finding rather than beginning a run that takes hours.
+set -uo pipefail
+if [[ "${1:-}" == "mutants" ]]; then
+    case "${2:-}" in
+    --version) printf 'cargo-mutants 0.0.0+gate-shim\n'; exit 0 ;;
+    --list-files) exit 0 ;;
+    esac
+fi
+printf 'cargo: this gate shim answers only `mutants --version` and `mutants --list-files`; a real mutation run must never begin inside a gate\n' >&2
+exit 97
+SHIM
+    chmod +x "$preflight_bin/cargo"
+
+    # A fixture repository. The identity and the signing flag are given per invocation so that
+    # nothing here depends on, or writes to, the person's git configuration.
+    #
+    #   $1  a name for the directory
+    #   $2  the one-word `kind` the stub floors in the case file read — `refuse` for a
+    #       repository the shipped floor must not start in, `start` for one it must. The
+    #       shipped floor never reads it and works the answer out from git, for the reason
+    #       the fixture directories above give.
+    #   $3  `on-a-remote` to write the remote-tracking ref a push would have written
+    #   $4  `uncommitted` to leave an edit behind after the commit
+    new_repo() {
+        local kind="$2" remote="$3" left="$4" repo="$scratch/repo-$1"
+        mkdir -p "$repo/scripts/gates" "$repo/.cargo"
+        cp "$checkout/scripts/gates/lib.sh" "$repo/scripts/gates/lib.sh"
+        cp "$floor" "$repo/scripts/mutants.sh"
+        chmod +x "$repo/scripts/mutants.sh"
+        # Committed, so the floor's own scratch directory does not make this tree dirty and
+        # answer the question the arm is asking.
+        printf 'target/\n' >"$repo/.gitignore"
+        printf '%s\n' "$kind" >"$repo/kind"
+        printf '# a scope file, so a refusal here is the precondition and not the missing config\n' \
+            >"$repo/.cargo/mutants.toml"
+        printf '# an acceptance register with no entries in it\n' >"$repo/scripts/mutants-accepted.txt"
+        git -C "$repo" -c init.defaultBranch=main init -q
+        git -C "$repo" add -A
+        git -C "$repo" \
+            -c user.name=gate -c user.email=gate@example.invalid -c commit.gpgsign=false \
+            commit -q -m 'the fixture repository this gate hands the floor'
+        if [[ "$remote" == "on-a-remote" ]]; then
+            # What a push leaves behind, written locally: this suite is offline by
+            # construction, and `refs/remotes/…` is exactly the record a push updates.
+            git -C "$repo" update-ref refs/remotes/origin/main "$(git -C "$repo" rev-parse HEAD)"
+        fi
+        if [[ "$left" == "uncommitted" ]]; then
+            printf '# an edit nobody committed\n' >>"$repo/scripts/mutants-accepted.txt"
+        fi
+        printf '%s\n' "$repo"
+    }
+
+    pushed="$(new_repo pushed start on-a-remote committed)"
+    unpushed="$(new_repo unpushed refuse no-remote committed)"
+    dirty="$(new_repo dirty refuse on-a-remote uncommitted)"
+
+    # Run the floor inside a fixture repository. Arguments before `--` are `NAME=value`
+    # environment for the run; arguments after it go to the floor. The two variables that
+    # decide the subject are cleared first, so a person who exported the escape in their own
+    # shell does not quietly turn every refusal below into a pass.
+    run_preflight() {
+        local repo="$1" status=0 item seen=0
+        shift
+        local -a envs=() args=()
+        for item in "$@"; do
+            if ((seen == 1)); then
+                args+=("$item")
+            elif [[ "$item" == "--" ]]; then
+                seen=1
+            else
+                envs+=("$item")
+            fi
+        done
+        last_output="$(
+            env -u WCH_MUTANTS_ALLOW_UNPUSHED -u WCH_MUTANTS_ITERATE -u WCH_MUTANTS_CLASSIFY \
+                PATH="$preflight_bin:$PATH" ${envs[@]+"${envs[@]}"} \
+                "$repo/scripts/mutants.sh" ${args[@]+"${args[@]}"} 2>&1
+        )" || status=$?
+        return "$status"
+    }
+
+    # `refused` — the floor must not begin: exit $GATE_NO_VERDICT, the word a reader skims for,
+    # not the word a survivor gets, and the remedy named. `started` — the floor must begin and
+    # be stopped by the shim's empty scope, which is the control this whole claim rests on: a
+    # precondition that refused everything would satisfy every `refused` line above it and make
+    # the floor unusable, and N60 records what a gate that cries wolf costs.
+    expect_preflight() {
+        local want="$1" label="$2" repo="$3" status=0 phrase
+        shift 3
+        run_preflight "$repo" "$@" || status=$?
+        preflight_runs=$((preflight_runs + 1))
+        case "$want" in
+        refused)
+            if ((status != GATE_NO_VERDICT)); then
+                gate_fail "$label: the floor exited $status where a refusal to start is exit $GATE_NO_VERDICT — a precondition nobody met is not a finding about the code and is not a pass either (owner ruling, 2026-08-21)"
+                printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                return 0
+            fi
+            if ! says_word REFUSED "$last_output"; then
+                gate_fail "$label: the floor exited $status without saying REFUSED, which is the word rung-vivid-managed's refusal uses and the word a reader skims for; an exit code nobody reads is not a report"
+                printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                return 0
+            fi
+            if says_word FAIL "$last_output"; then
+                gate_fail "$label: the refusal to start says FAIL, which is the word a survivor with no acceptance gets; that is note N66's mistake in a new place"
+                printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                return 0
+            fi
+            for phrase in "commit and push" "just mutants-iterate" "WCH_MUTANTS_ALLOW_UNPUSHED"; do
+                if [[ "$last_output" != *"$phrase"* ]]; then
+                    gate_fail "$label: the refusal never named '$phrase'; a refusal that does not say what to do next is a wall, and this one has three ways out"
+                    printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                    return 0
+                fi
+            done
+            ;;
+        started)
+            if ((status != 1)); then
+                gate_fail "$label: the floor exited $status where a run that started and then met the shim's empty scope is exit 1; this is the case the precondition must let through"
+                printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                return 0
+            fi
+            if says_word REFUSED "$last_output"; then
+                gate_fail "$label: the floor refused to start, and this is the case it must not refuse — a floor that refuses everything is the gate that cries wolf (note N60)"
+                printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                return 0
+            fi
+            if [[ "$last_output" != *"mutants.toml"* ]]; then
+                gate_fail "$label: the floor exited 1 without naming the scope file, so nothing here shows it got past the precondition rather than stopping somewhere else"
+                printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+                return 0
+            fi
+            ;;
+        *)
+            gate_fail "this gate asked the floor to '$want', which is neither refusing to start nor starting"
+            return 0
+            ;;
+        esac
+        gate_note "$label: $want, exit $status"
+    }
+
+    expect_preflight refused "a full run whose commit is on no remote" "$unpushed"
+    expect_preflight refused "a full run with uncommitted work beside a pushed commit" "$dirty"
+    expect_preflight started "a full run on a checkout committed and pushed" "$pushed"
+    expect_preflight started "the named escape on a checkout that is on no remote" "$unpushed" \
+        WCH_MUTANTS_ALLOW_UNPUSHED=1
+    # The escape has two halves and the second is the one a silent environment variable would
+    # lose: a deliberate long run on unpushed work stays possible, and it says out loud, counted,
+    # what it is accepting. That is the register `WCH_NO_MOTION=1` set for the motor suites, and
+    # AGENTS rule 3's "never silence" applied to a precondition somebody turned off.
+    if [[ "$last_output" != *"SKIP"* || "$last_output" != *"WCH_MUTANTS_ALLOW_UNPUSHED"* ]]; then
+        gate_fail "the escape started the full run without naming itself in a counted skip; an escape nobody can see in the log is the silent environment variable the ruling of 2026-08-21 does not allow"
+        printf '%s\n' "$last_output" | sed 's/^/        /' >&2
+    fi
+    gate_checked 1 "run(s) through the named escape, which must start and must say out loud, counted, what it is accepting"
+
+    expect_preflight started "iterate mode on a checkout that is on no remote" "$unpushed" \
+        -- --iterate
+    expect_preflight started "iterate mode by its variable, on a checkout that is on no remote" \
+        "$unpushed" WCH_MUTANTS_ITERATE=1
+
+    gate_checked "$preflight_runs" "start(s) of the floor over fixture repositories that differ in one fact each — the commit's presence on a remote, the uncommitted work beside it, and the mode asked for"
+    gate_require_nonzero "$preflight_runs" "floor starts"
+else
+    gate_skip 1 "git cannot describe $checkout, so no fixture repository could be built and \"the full run refuses to start on work that exists only on this machine\" was not checked here"
+fi
+
 gate_finish

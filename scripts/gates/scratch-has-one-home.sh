@@ -47,8 +47,11 @@
 # A line preceded by `# wch-scratch-exempt: <reason>` (or `// wch-scratch-exempt: <reason>` in
 # Rust) is allowed to say what it says. There are three in the tree and each is an argument
 # somebody has to read: the socket root itself, `TempRuntimeDir`'s `sun_path` budget, and the
-# mutation floor's build root. Every one of them is printed on every run, with its file, its
-# line and its reason, because an allowlist nobody reads is a hole with a nice name.
+# line that hands the mutation floor's build root to cargo-mutants through `$TMPDIR` — which
+# is all that is left of that exemption since the owner's 2026-08-21 ruling moved the root
+# itself under `target/`, where this predicate would have put it anyway. Every one of them is
+# printed on every run, with its file, its line and its reason, because an allowlist nobody
+# reads is a hole with a nice name.
 #
 # ## Honest limits
 #

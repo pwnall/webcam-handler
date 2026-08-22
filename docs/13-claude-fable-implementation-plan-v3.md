@@ -113,18 +113,22 @@ are re-measured on the tree they land in rather than reasoned about from the dif
 rung is **44 claims and 461 assertions** — still `browser/claims.json`'s own two numbers and
 `web_browser.rs`'s floor, raised in the same diff as the seven claims that landed the G9 lens's
 findings (notes **N310**–**N314**); no file under `crates/web/` moves after that, so the pair
-describes the tree this sentence is committed into as well. The suite is **533 fail arms across
+describes the tree this sentence is committed into as well. The suite is **538 fail arms across
 the same 43 case files**, and it reached that figure in two steps this block owns. **Twenty-two**
 are the red-on-inverse arms for the five gate repairs the review returned (notes
 **N315**–**N318** and **N323**) — the figure and its attribution are one claim, and the five
 files carry it: between `556e4d2` and `f9abe48` `avi-reparse-is-independent` goes 10 → 12,
 `counted-selections` 9 → 11, `facade-is-the-composition` 38 → 45, `facade-stability-table-sync`
 25 → 34 and `profile-partition-is-closed` 9 → 11, no sixth case file moves, and the 502 stated
-above plus those twenty-two is 524. The remaining **nine** are the closes' own and stand in one
-file, `counted-selections.cases.sh` going 11 → 20: three for the ban on a `tests` row's count of
-its own tests (**N339**), two more for the spelling that ban turned out to be (**N340**), three
-for the branch check reading a lone `test()` clause as a branch of one (**N341**), and one for
-the bare multiple of ten that ban could not read (**N345**); 524 plus those nine is 533. **This
+above plus those twenty-two is 524. The remaining **fourteen** are the closes' own and stand in
+two files. Nine are `counted-selections.cases.sh` going 11 → 20: three for the ban on a `tests`
+row's count of its own tests (**N339**), two more for the spelling that ban turned out to be
+(**N340**), three for the branch check reading a lone `test()` clause as a branch of one
+(**N341**), and one for the bare multiple of ten that ban could not read (**N345**). The other
+five are the precondition's — `mutation-verdict.cases.sh` going 7 → 12 for the full floor's
+refusal to start on work that exists only on this machine (owner ruling, 2026-08-21), which is
+that gate's claim 5 and the one claim of the five that a recorded result set cannot drive, since
+a recorded run is exactly the mode that never asks; 524 plus those fourteen is 538. **This
 sentence first read 514, and twelve, and the two were one error**: 502 plus twelve is 514, so the
 total was derived from the attribution rather than counted. Where the twelve itself came from is
 not recoverable, and the diff is not where — `git diff 556e4d2 f9abe48 -- scripts/gates/cases/`
@@ -518,7 +522,7 @@ record's row above and notes **N335**–**N344**.
 | Session GC | a *measured* store-size quantity (instrumentation first — N55's re-phrasing stands) | §8.8; N55 |
 | `webcam-handler-cli` auto-forward | refusal friction observed | §8.7 |
 | Audio | a license-clean path appears | §8.2 |
-| Mutation-floor default jobs | the owner's ruling on N251's price sheet: `nproc` (hides survivors under load — measured, four real defects waved through) vs 1 (13–19 h); the interim posture is `mutants.sh`'s stated warning | N251 |
+| Mutation-floor default jobs | the owner's ruling on N251's price sheet: `nproc` (hides survivors under load — measured, four real defects waved through) vs 1 (13–19 h); the interim posture is `mutants.sh`'s stated warning. **The jobs figure is the half still open.** The floor's other pending question, where its build trees live, was ruled on separately on 2026-08-21 and is settled: they run under `target/` and never in `/tmp`, because a run that fills a RAM-backed `tmpfs` costs the machine rather than the clock, with `WCH_MUTANTS_BUILD_ROOT` the escape for whoever accepts the risk; what the move costs in throughput is open, since E7's 7× and N251's 2h23 off the `tmpfs` disagree and `mutants.sh` carries both. That ruling does not answer this row — a job count that hides survivors hides them wherever the trees are written | N251; N84 |
 | Re-run N5's jsonrpsee measurement | any jsonrpsee bump | §2.8, N5 |
 | Re-check PF:16 against `little_exif` | any little_exif bump | D6, PF:16 |
 

@@ -20,9 +20,12 @@
 #       every `wch*` entry in both roots, which is what you want when nothing is running and
 #       is exactly what you do not want while a mutation floor is three hours into a run.
 #
-# What it does not cover is note N84's list, and the two worth remembering are cargo-mutants'
-# own `cargo-mutants-*` build trees (its name, not ours) and a scratch root a caller pointed
-# somewhere else with $WCH_GATE_SCRATCH.
+# What it does not cover is note N84's list as that note's own 2026-08-21 amendment leaves it,
+# and the one worth remembering is a scratch root a caller pointed somewhere else with
+# $WCH_GATE_SCRATCH. cargo-mutants' own `cargo-mutants-*` build trees (its name, not ours) came
+# off the list when the owner moved the mutation floor's build root under this root (note
+# N347): what this takes is the `wch…` directory above them, so they go with it — and they go
+# back out of reach for whoever points $WCH_MUTANTS_BUILD_ROOT at another filesystem.
 set -euo pipefail
 
 # shellcheck source-path=SCRIPTDIR

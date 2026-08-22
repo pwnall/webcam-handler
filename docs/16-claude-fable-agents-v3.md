@@ -227,7 +227,22 @@ with `just ci` green and the notes current; the phase review gets its own sessio
   under load the floor both deletes true acceptances and hides real survivors**
   (N209, N251). Hours not minutes; never a `just ci` step; its absence a named, counted
   skip; the default jobs figure and its price are `mutants.sh`'s stated warning pending
-  the owner's ruling.
+  the owner's ruling. The build trees run under `target/` and never in `/tmp` (owner
+  ruling, 2026-08-21), because a `tmpfs` a run fills is a machine the owner loses rather
+  than a build that is merely slow: the ruling outranks N84's exemption without disputing
+  the measurement behind it — E7's seven mutants a minute on `tmpfs` against under one on
+  the disk, which N251's later run off the `tmpfs` does not reproduce, so what the move
+  costs is open and `mutants.sh` says so rather than quoting the 7× as current — and
+  `WCH_MUTANTS_BUILD_ROOT` stays the escape for whoever wants the speed and accepts the
+  risk. The full run also refuses to start unless the checkout is committed and that
+  commit exists on a remote (owner ruling, 2026-08-21), because a run measured in hours
+  should not be the only place the work exists; it reads the local remote-tracking refs
+  and calls nothing over the network. `just mutants-iterate` is deliberately not
+  covered — it is the minutes-long triage mode, and checking a fix before committing it
+  is what that mode exists for. The refusal is exit 75 and is not a finding: no mutant
+  was generated, no survivor was seen, no acceptance was disproved.
+  `WCH_MUTANTS_ALLOW_UNPUSHED=1` starts the run anyway and prints a named, counted skip
+  saying what it accepts, in the register `WCH_NO_MOTION=1` holds for the motor suites.
 - No `sleep` as synchronization — settle logic runs on a clock the test owns: a
   `SteppedClock` where the deadline is the subject, a `FrozenClock` where it is not
   (N60, N67).

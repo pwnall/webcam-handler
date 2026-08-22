@@ -27,11 +27,15 @@
 #     program*, and no test distinguishes identical programs (N60 settled its own false
 #     positive on exactly that proof).
 #
-# The other four are the directions those two do not cover: green where there was no verdict
-# (an unproven criterion reading as proven), no-verdict where there was a real survivor (the
-# floor weakened by its own new outcome), a register whose second direction stopped firing,
-# and a floor that refuses a tree nobody touched — which is the gate that cries wolf on every
-# run, and N60 records what that costs.
+# The other four classification directions are the ones those two do not cover: green where
+# there was no verdict (an unproven criterion reading as proven), no-verdict where there was a
+# real survivor (the floor weakened by its own new outcome), a register whose second direction
+# stopped firing, and a floor that refuses a tree nobody touched — which is the gate that cries
+# wolf on every run, and N60 records what that costs.
+#
+# The block at the end of this file is a different subject on the same program: not what a run
+# concluded but whether it may begin, which is the owner's ruling of 2026-08-21. Its arms use the
+# same seam and the same one-answer-changed discipline, over a second vocabulary of overrides.
 #
 # Each arm names the sentence it is claiming (`gate_red_because`, note **N31**), and nowhere is
 # that more necessary than here: every stub below is red under the same sentence with a different
@@ -46,10 +50,16 @@
 # Write a floor-shaped program: it reads the fixture's one-word `kind` file and answers.
 #
 #   $1        where to write it
-#   $2..      `<kind>=<green|finding|no-verdict>` overrides of the correct answer
+#   $2..      `<kind>=<green|finding|no-verdict>` overrides of the correct verdict over a
+#             recorded result set, or `<case>=<start|refuse|quiet>` overrides of the correct
+#             answer to "may this run begin at all" — the predicate's claim 5, where the
+#             fixture is a whole git repository rather than a directory of result files. The
+#             two vocabularies share no key, and the routing below is by name so that a stub
+#             is still wrong in exactly one way.
 #
 # The shipped floor works out what it is looking at; a stub is told, because a stub that had
-# to classify would be a second copy of the thing under test.
+# to classify — or to decide for itself whether a commit is on a remote — would be a second
+# copy of the thing under test.
 _stub_floor() {
     local script="$1"
     shift
@@ -62,15 +72,63 @@ declare -A verdict=(
     [clean]=green [unaccepted]=finding [stale]=finding
     [truncated]=no-verdict [absent]=no-verdict [moved]=no-verdict
 )
+declare -A preflight=(
+    [refuse]=refuse [start]=start [escape]=start [iterate]=start
+)
 STUB
     local override
     for override in "$@"; do
-        printf 'verdict[%s]=%s\n' "${override%%=*}" "${override#*=}" >>"$script"
+        case "${override%%=*}" in
+        refuse | start | escape | iterate)
+            printf 'preflight[%s]=%s\n' "${override%%=*}" "${override#*=}" >>"$script"
+            ;;
+        *)
+            printf 'verdict[%s]=%s\n' "${override%%=*}" "${override#*=}" >>"$script"
+            ;;
+        esac
     done
     # The no-verdict exit code is taken from `lib.sh` rather than typed here: a stub that
     # transcribed 75 would keep passing the day the convention moved, and this whole
     # predicate is about one number meaning one thing.
     cat >>"$script" <<STUB
+# No recorded result set, so this floor is not being asked to classify anything: it is being
+# asked whether it may start. The fixture repository carries its one-word \`kind\` beside its
+# \`scripts/\`, for the same reason the result directories carry theirs.
+if [[ -z "\$dir" ]]; then
+    repo_kind="\$(cat "\$(dirname "\$0")/../kind" 2>/dev/null || printf 'unknown')"
+    answer="\${preflight[\$repo_kind]:-start}"
+    announce=0
+    if [[ "\${WCH_MUTANTS_ALLOW_UNPUSHED:-0}" == "1" ]]; then
+        answer="\${preflight[escape]:-start}"
+        announce=1
+    fi
+    for arg in "\$@"; do
+        [[ "\$arg" == "--iterate" ]] && answer="\${preflight[iterate]:-start}"
+    done
+    if [[ "\${WCH_MUTANTS_ITERATE:-0}" == "1" ]]; then
+        answer="\${preflight[iterate]:-start}"
+    fi
+    # \`quiet\` is \`start\` with the escape's announcement dropped: the run happens and nothing
+    # in the log says a precondition was turned off for it.
+    if [[ "\$answer" == "quiet" ]]; then
+        answer=start
+        announce=0
+    fi
+    if [[ "\$answer" == "start" ]]; then
+        if ((announce == 1)); then
+            printf 'mutants: SKIP 1 — WCH_MUTANTS_ALLOW_UNPUSHED=1, so this run started without checking that the work exists anywhere off this machine\n'
+        fi
+        # Where a floor that started is stopped by the predicate's \`cargo\` shim: an empty
+        # scope, which the shipped floor already has words for.
+        printf 'mutants: FAIL — .cargo/mutants.toml selects no files; a mutation run over nothing cannot go red\n' >&2
+        exit 1
+    fi
+    printf 'mutants: NO VERDICT — REFUSED to start: this checkout is not committed and pushed\n' >&2
+    printf 'mutants:   remedy: commit and push, then re-run\n' >&2
+    printf 'mutants:   or just mutants-iterate, which carries no such precondition\n' >&2
+    printf 'mutants:   or WCH_MUTANTS_ALLOW_UNPUSHED=1, which starts anyway and says so out loud\n' >&2
+    exit $GATE_NO_VERDICT
+fi
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
     printf 'mutants: SKIP 1 — git cannot describe this tree, so nobody checked whether it moved\n'
 fi
@@ -225,4 +283,76 @@ RUNNER
     gate_red_because \
         "a phase whose criterion could not answer: the phase runner exited 1, wanted $GATE_NO_VERDICT" \
         env WCH_GATE_PHASE_RUNNER="$stub" "$GATE"
+}
+
+# ---------------------------------------------------------------- the precondition on starting
+#
+# Claim 5's directions. The subject moves from "what did this run conclude" to "may this run
+# begin", which is the owner's ruling of 2026-08-21: the full floor spends hours reading a tree
+# and stressing the machine, so it refuses to start unless that work also exists somewhere else,
+# and the triage mode — minutes, and the tool you reach for *before* committing — does not.
+#
+# Five directions, because the rule has five ways to be wrong and four of them are the ways a
+# rule like this usually fails: it does not fire, it fires on everything, it swallows the mode it
+# was never meant to cover, its escape does not work, or its escape works silently.
+
+# The rule that does not fire, which is the ruling simply not implemented: hours of machine time
+# spent on a checkout whose only copy is the machine doing the spending.
+fail_case_a_floor_that_starts_the_full_run_on_work_nothing_else_holds() {
+    local stub
+    stub="$(_stub_path)"
+    _stub_floor "$stub" refuse=start
+    gate_red_because \
+        "a full run whose commit is on no remote: the floor exited 1 where a refusal to start is exit $GATE_NO_VERDICT" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+}
+
+# The rule that fires on everything, which is the same defect `fail_case_a_floor_that_refuses_a_
+# tree_nobody_touched` covers one claim up, and it is the one that decides whether any of this is
+# usable: a floor that refuses a checkout which *is* committed and pushed is a floor nobody can
+# run, and N60 records what a gate that cries wolf costs.
+fail_case_a_floor_that_refuses_a_checkout_that_is_committed_and_pushed() {
+    local stub
+    stub="$(_stub_path)"
+    _stub_floor "$stub" start=refuse
+    gate_red_because \
+        "a full run on a checkout committed and pushed: the floor exited $GATE_NO_VERDICT where a run that started and then met the shim's empty scope is exit 1" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+}
+
+# The split flattened. `--iterate` is the triage tool the tree-recording paragraph in
+# `scripts/mutants.sh` is defending — run it after each development stage, on the dirty tree
+# whose fix you are checking — and a precondition that reached it would have turned one ruling
+# about long runs into a ban on the short one.
+fail_case_a_floor_that_refuses_the_triage_mode_the_precondition_does_not_cover() {
+    local stub
+    stub="$(_stub_path)"
+    _stub_floor "$stub" iterate=refuse
+    gate_red_because \
+        "iterate mode on a checkout that is on no remote: the floor exited $GATE_NO_VERDICT where a run that started and then met the shim's empty scope is exit 1" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+}
+
+# The escape that is not one. A deliberate long run on unpushed work stays possible — that is
+# what makes this a precondition rather than a prohibition — and a named door that does not open
+# leaves the caller with no verb out, which is docs/11's H2 in one variable.
+fail_case_a_floor_whose_named_escape_does_not_let_the_run_through() {
+    local stub
+    stub="$(_stub_path)"
+    _stub_floor "$stub" escape=refuse
+    gate_red_because \
+        "the named escape on a checkout that is on no remote: the floor exited $GATE_NO_VERDICT where a run that started and then met the shim's empty scope is exit 1" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
+}
+
+# The escape that opens quietly, which is the half of `WCH_NO_MOTION=1`'s register that is easy
+# to drop: the run happens, the precondition was turned off for it, and nothing in the log says
+# so. AGENTS rule 3 has one word for that shape and it is "never silence".
+fail_case_a_floor_whose_escape_starts_the_long_run_without_saying_so() {
+    local stub
+    stub="$(_stub_path)"
+    _stub_floor "$stub" escape=quiet
+    gate_red_because \
+        "the escape started the full run without naming itself in a counted skip" \
+        env WCH_GATE_MUTATION_FLOOR="$stub" "$GATE"
 }

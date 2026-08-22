@@ -91,6 +91,62 @@
 # Like every rung here it reports a named, counted skip rather than exiting quietly when
 # the tool it needs is absent: cargo-mutants is a dev tool and installing it is never a
 # requirement of `just ci`.
+#
+# ## The full run refuses to start on work that exists only on this machine
+#
+# **The ruling (owner, 2026-08-21):** a mutation-floor run may take as long as it takes,
+# *provided the tree is committed and pushed right before it starts*. It is the same day's
+# second ruling about this job and it rests on the same fact as the first, one step further
+# along: the floor is the one thing here that runs for hours while stressing the machine, the
+# build-root move below addresses the crash, and this addresses what a crash costs. Hours of
+# machine time spent on work that exists in exactly one place is how the work gets lost.
+#
+# **This is a different axis from the tree recording further down, and the two are one argument
+# rather than two.** That block asks about *result validity* — one verdict describes one tree —
+# and it says in as many words that running this on a dirty tree is ordinary and that "you had
+# uncommitted work" is not a finding. Nothing here withdraws a word of it. What is added is a
+# question it never asked: not "is this the same tree the run started on", but "does this work
+# exist anywhere other than the machine that is about to spend hours stressing itself".
+#
+# So the precondition follows the split the two recipes already make:
+#
+#   - **`just mutants`** — the full floor, hours, the only mode that may answer PASS — refuses
+#     to start unless the checkout is committed and that commit exists on a remote. A narrowed
+#     re-run (`just mutants -F store.rs`) is still this mode and is still refused: how long a
+#     narrowing takes is not something this script can know, and a caller who does know has the
+#     escape below.
+#   - **`just mutants-iterate`, and `--iterate` however it arrives** — the triage tool, minutes,
+#     "run it after each development stage" — carries no such precondition. Requiring a push
+#     there would break the ordinary use the recording block is defending: checking a fix
+#     *before* committing it is precisely what iterate mode exists for, and a triage tool that
+#     demanded a push first would be a triage tool nobody ran.
+#
+# **It reads the local remote-tracking refs and calls nothing over the network**, because the
+# rest of this suite is offline by construction. A push is exactly what updates `refs/remotes/…`,
+# so a commit contained by one of them is a commit that has left this machine. The limit is the
+# other side of that: it trusts the last push or fetch this checkout made, and it cannot see a
+# remote somebody else has moved — or one that has since lost the ref — in between. That is the
+# right side to err on, because the loss it exists to prevent is work that was never pushed at
+# all rather than work whose remote has drifted.
+#
+# **It refuses rather than skipping**, which is `just rung-vivid-managed`'s idiom and AGENTS
+# rule 3's reason: a caller who typed `just mutants` asked for the full floor, so answering zero
+# would be a skip that reads as a pass. The refusal names its remedy — commit and push, then
+# re-run — the way that recipe names `just bless`.
+#
+# **It is not a finding, and it exits `$GATE_NO_VERDICT` for the reason the three-outcome
+# vocabulary above exists at all.** A precondition nobody met is not a statement about the code
+# or the register: no mutant was generated, no survivor was seen, no acceptance was disproved.
+# It is not a resource shortfall either, and it does not claim to be one — but `EX_TEMPFAIL`'s
+# own sentence, "temporary failure; the user is invited to retry", is exactly the claim, and
+# here the retry is one `git push` away. Spelling it 1 would file a refusal to start in the
+# column a missing test is filed in, which is note **N66**'s whole lesson; spelling it 0 would
+# be the skip that reads as a pass.
+#
+# **One named, loud escape**, in the register `WCH_NO_MOTION=1` holds for the motor suites:
+# `WCH_MUTANTS_ALLOW_UNPUSHED=1` starts the full run anyway and prints a counted, named skip
+# saying what it is accepting. A deliberate long run on unpushed work stays possible; what it
+# may not do is happen quietly.
 set -euo pipefail
 
 # `lib.sh` for `$GATE_NO_VERDICT` and the three `gate_tree_*` helpers, and for nothing
@@ -154,8 +210,9 @@ no_verdict() {
 
 # This run's own bookkeeping — survivor lists, the sorted register, a throw-away criteria
 # table — which is kilobytes and goes where all test scratch goes since the 2026-08-12 ruling
-# (note N84). The *build* root is a different question and is answered further down, at
-# `build_root`, where the measurement that decides it lives.
+# (note N84). The *build* root is answered further down, at `build_root`, where the
+# measurement that used to except it and the 2026-08-21 ruling that withdrew the exception
+# both live.
 scratch="$(mktemp -d "$(gate_scratch_root)/wch-mutants.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
@@ -175,6 +232,12 @@ trap 'rm -rf "$scratch"' EXIT
 # dirty tree is ordinary — it is how you check a fix before committing it — and "you had
 # uncommitted work" is not a finding. What is a finding is that the tree is not the one the
 # run started on.
+#
+# **That sentence stands, and the precondition in the header is not a retraction of it**: this
+# block is about whether one verdict describes one tree, and `refuse_unless_committed_and_pushed`
+# below is about whether hours of work exist anywhere but here. The two answers differ, which is
+# why they are two questions — `--iterate` reaches this recording on a dirty tree exactly as it
+# always did, and it is only the run that takes hours that has anything to lose.
 tree_before=""
 if ((tree_watched == 1)) && gate_tree_watchable "$root"; then
     tree_before="$(gate_tree_state "$root")"
@@ -199,6 +262,88 @@ tree_did_not_move() {
         "${changes[@]}" \
         "(\`<\` is the tree this run started on, \`>\` is the tree it ended on; the first line of each is the commit)" \
         "nothing here is a claim about the code: re-run the floor on a tree nobody is editing"
+}
+
+# ------------------------------------------- the work a long run could take down with it
+#
+# The header's 2026-08-21 precondition, and the header is where its argument lives: why the
+# full run carries it and `--iterate` does not, why the answer is a refusal rather than a skip,
+# why the exit code is the no-verdict one, and what "read offline" can and cannot see. Only the
+# mechanics are here.
+
+# The ways out, printed by every refusal, because a refusal that does not say what to do next
+# is a wall. `just rung-vivid-managed` names `just bless` for the same reason.
+declare -a preflight_remedy=(
+    "remedy: commit and push, then re-run \`just mutants\` — the run is long, and that is what makes it survivable"
+    "or \`just mutants-iterate\`, the triage mode this precondition deliberately does not cover: minutes rather than hours, and it never claims the scope is clean"
+    "or WCH_MUTANTS_ALLOW_UNPUSHED=1, which starts the full run anyway and says out loud, counted, what it is accepting"
+)
+
+# A precondition that was not met, so nothing ran at all. `no_verdict` carries the exit code and
+# the "this is not a finding" trailer; this adds the word a reader skims for and the remedy.
+refuse() {
+    local headline="$1"
+    shift
+    no_verdict "REFUSED to start: $headline" "$@" "${preflight_remedy[@]}"
+}
+
+# Is what this machine is about to spend hours on also somewhere else? Answered from the tree
+# state already recorded above and from the refs a push updates, and answered before anything
+# is listed, built or generated.
+refuse_unless_committed_and_pushed() {
+    local -a recorded=() uncommitted=() containing=() remotes=() why=()
+    local head_line head_commit shown
+
+    if [[ "${WCH_MUTANTS_ALLOW_UNPUSHED:-0}" == "1" ]]; then
+        skip "WCH_MUTANTS_ALLOW_UNPUSHED=1, so the full floor started without checking that this work exists anywhere else; hours are being spent on a checkout that may have no copy off this machine, and a machine this run takes down takes that work with it (owner ruling, 2026-08-21)"
+        return 0
+    fi
+    if ((tree_watched == 0)); then
+        skip "git cannot describe $root, so \"this work exists somewhere other than this machine\" was not checked either; a missing tool is not a violation"
+        return 0
+    fi
+
+    # The same recording the tree-move check compares against, read rather than re-sampled: a
+    # refusal has to describe the state this run would have started from, and two `git status`
+    # calls are two states.
+    mapfile -t recorded <<<"$tree_before"
+    head_line="${recorded[0]:-HEAD <none>}"
+    head_commit="${head_line#HEAD }"
+    uncommitted=("${recorded[@]:1}")
+
+    if ((${#uncommitted[@]} > 0)); then
+        refuse "the checkout has ${#uncommitted[@]} uncommitted change(s), and this run reads the tree for hours" \
+            "${uncommitted[@]}" \
+            "(those are \`git status --porcelain\` lines; an untracked file counts, because untracked work is the work with nowhere else to be)"
+    fi
+    if [[ "$head_commit" == "<none>" ]]; then
+        refuse "this checkout has no commit at all, so there is nothing a remote could be holding" \
+            "$head_line"
+    fi
+
+    mapfile -t containing < <(
+        git -C "$root" for-each-ref --format='%(refname:short)' \
+            --contains "$head_commit" refs/remotes/ 2>/dev/null
+    )
+    if ((${#containing[@]} > 0)); then
+        printf 'mutants: %s is on %s, so this run is not the only copy of the work it reads\n' \
+            "$head_line" "${containing[*]}"
+        return 0
+    fi
+
+    mapfile -t remotes < <(
+        git -C "$root" for-each-ref --format='%(refname:short)' refs/remotes/ 2>/dev/null
+    )
+    if ((${#remotes[@]} == 0)); then
+        why+=("this checkout knows no remote-tracking ref at all, so nothing here could say the work had left the machine; a remote and a first push are the fix")
+    else
+        shown="${remotes[*]:0:3}"
+        ((${#remotes[@]} > 3)) && shown="$shown …"
+        why+=("${#remotes[@]} remote-tracking ref(s) are known here and none of them contains it ($shown)")
+    fi
+    refuse "$head_line is on no remote this checkout knows of, and this run takes hours" \
+        "${why[@]}" \
+        "read offline, from the refs a push updates: this cannot see a remote somebody else has moved, and it trusts the last push or fetch made from here"
 }
 
 if [[ ! -f "$config" ]]; then
@@ -247,6 +392,26 @@ else
         exit 0
     fi
 
+    # Which mode this is, decided here rather than at the block that forwards the flag, because
+    # the precondition on the next line is a rule about one of the two modes and cannot ask
+    # after the fact. The forwarding block still owns the flag itself, and still owns the
+    # accounting: one mode, two doors, and only one place that decides which door was used.
+    iterating=0
+    if [[ "${WCH_MUTANTS_ITERATE:-0}" == "1" ]]; then
+        iterating=1
+    fi
+    for arg in "$@"; do
+        [[ "$arg" == "--iterate" ]] && iterating=1
+    done
+
+    # The 2026-08-21 precondition, on the full run only. After the tool check, because a machine
+    # that cannot run the floor at all has no hours to lose to it and a refusal there would be
+    # the wolf note **N60** prices; before the scope listing, the space budget and the baseline
+    # build, because a run that may not start should not first spend a minute finding that out.
+    if ((iterating == 0)); then
+        refuse_unless_committed_and_pushed
+    fi
+
     # The scope, counted — and asked of the tool rather than transcribed from the config it
     # reads, so a glob that has stopped matching shows up here as a smaller number instead of
     # as a silently narrower floor (note N10's family in a mutation costume).
@@ -277,7 +442,9 @@ else
     # own build directory, so seven jobs at the shipped profile is seven copies of that — an
     # order of magnitude more space than any `tmpfs` `/tmp` holds, and the failure mode is a run
     # that dies on ENOSPC an hour in having produced nothing. Measured: the first build
-    # directory of the run before this setting reached 6.1 GiB on its own.
+    # directory of the run before this setting reached 6.1 GiB on its own. The setting survives
+    # the 2026-08-21 move of the build root onto the disk below, because seven copies of that is
+    # tens of gibibytes on any root and this one now shares its filesystem with `target/`.
     #
     # Turning debug info off cannot change a verdict — it changes what a backtrace can say, not
     # what a test asserts — and it makes the links this job spends most of its time on much
@@ -289,48 +456,126 @@ else
 
     # Each job is a whole copy of the tree with its own build directory. So the constraint on
     # parallelism is **space and I/O, not cores** — and both were measured on the machine this
-    # job was written on:
+    # job was written on, on 2026-08-09, over 410 mutants at five jobs (note **E7**):
     #
     #   - `$TMPDIR` on `tmpfs`: about 7 mutants a minute.
     #   - the same run with the build directories moved onto the disk holding `target/`: under
     #     one a minute. Concurrent cargo builds are I/O bound long before they are CPU bound,
     #     and putting them on the same spindle as everything else costs an order of magnitude.
     #
-    # So `$TMPDIR` is the default, and `WCH_MUTANTS_BUILD_ROOT` is the escape for a machine
-    # whose `$TMPDIR` is too small to hold `jobs` build trees — slower, and worth it only
-    # against not running at all.
+    # **The second figure does not survive this repository's own later measurement, so it is
+    # not quoted below as what the move costs.** Note **N251** records a run of 2026-08-18 that
+    # pointed `WCH_MUTANTS_BUILD_ROOT` off the `tmpfs` — at "the 314 GiB filesystem", named by
+    # the free space this very `df` prints — and finished 1132 mutants in 2h23 at eight jobs.
+    # That is about eight mutants a minute with the build trees *not* on the `tmpfs`, which is
+    # E7's `tmpfs` rate rather than E7's disk rate. N251 does not name the path and the
+    # inference is worth stating as one: this host mounts exactly one non-`tmpfs` data
+    # filesystem, and it is the one `target/` is on. So what the move below costs is **not
+    # measured on the current workspace**: E7 measured an order of magnitude, N251 shows no
+    # sign of one, the two runs differ in job count, scope and month, and nobody has compared
+    # the two roots since. It is left open rather than guessed, and the ruling below does not
+    # rest on it — which is the whole reason it can be left open.
     #
+    # ## Where the build trees live: under `target/`, since the owner ruled on 2026-08-21
+    #
+    # E7's 7× is why this job held an exception from the 2026-08-12 ruling that put all test
+    # scratch under `target/` (note **N84**), and **the owner withdrew the exception on
+    # 2026-08-21**. The measurement is kept above rather than deleted, because a reversal that
+    # loses the number it lost to is a reversal nobody can re-litigate — and because what the
+    # exception was argued on is precisely what the ruling declines to weigh. It is outranked,
+    # and what outranks it is the difference between the two failures rather than the
+    # difference between the two speeds. That the price is now unmeasured (two paragraphs up)
+    # changes nothing here: an argument that survives the worst price it was ever quoted does
+    # not need the price.
+    #
+    # `/tmp` on this host is a 16 GiB `tmpfs`, which is RAM: a run that fills it is not a slow
+    # build, it is a run competing with the memory the machine is running in, and in the
+    # owner's words it "could crash the system and make the machine inaccessible" — with the SSD
+    # wear and the unsaved work that follows. A run on the disk that holds `target/` is, at
+    # worst, slow. A slow run is a price this project can pay; an inaccessible machine is not
+    # one it can choose.
+    #
+    # **And the budget below does not make the tmpfs path safe, which this session measured.**
+    # `just mutants` as shipped, run during the 2026-08-21 gate closes, trimmed itself out loud
+    # exactly as designed — `/tmp has 13 GiB free, so 3 job(s) rather than 8 (about 3 GiB each,
+    # 3 GiB held back)` — built and tested its baseline in 109 s and 75 s, and then died at 337
+    # of 1131 mutants (154 caught, 183 unviable, 0 missed) with `Worker thread failed: failed to
+    # overwrite "/tmp/cargo-mutants-webcam-handler-VIvqdP.tmp/crates/engine/src/session.rs":
+    # Disk quota exceeded (os error 122)`. A build tree that run left behind measured 3.5 GiB
+    # against the `per_job_gib=3` the budget had divided by. That is note **N66**'s finding
+    # recurring in its own shape — the per-job figure understated on a workspace that has grown
+    # again — and it is the answer to "the budget check makes the exception safe": the budget is
+    # exactly as good as its measurement of a tree whose size nobody re-measures, and that
+    # measurement has now been the thing that was wrong twice.
+    #
+    # **Two causes were present and the second is the one that cannot be fixed here**, which is
+    # note **N52**'s reading of the identical death at the P4c boundary: the `df` is sampled once
+    # at the start and cannot see what arrives afterwards, and this `/tmp` was also holding the
+    # session's own scratch, which grew all day beside the run. So a per-job figure that is
+    # current does not close this hole either — on a filesystem shared with everything else on
+    # the machine, no one-shot budget can. That is an argument about the `tmpfs` rather than
+    # about the arithmetic, and it is the second reason the default moves.
+    #
+    # So the build root defaults to a directory under the scratch home everything else here
+    # already uses — `gate_scratch_root`, which is `target/` plus the name
+    # `schema::paths::SCRATCH_DIR` holds for both languages — and `WCH_MUTANTS_BUILD_ROOT` now
+    # points the other way: it is how somebody who wants the tmpfs speed, and accepts what
+    # filling a RAM-backed filesystem does to the machine, asks for it. That variable is not the
+    # only door, and saying so is the honest version of "never in `/tmp`": `gate_scratch_root`
+    # honours `$WCH_GATE_SCRATCH` first, which `lib.sh` offers as the way to put the bulk of test
+    # scratch on another filesystem, so a caller who has already moved every gate's scratch onto
+    # a `tmpfs` has moved these trees there with it. What the ruling settles is what this script
+    # chooses when nobody has asked for anything.
+    #
+    # Three things follow that the exception did not have. `target/` is gitignored and carries
+    # cargo's `CACHEDIR.TAG`, so these trees are already declared regenerable and are invisible
+    # to every gate that walks the tree; they now sit inside a directory this project names, so
+    # `gate_scratch_sweep` reclaims them — including the `cargo-mutants-*` directories N84 had to
+    # record as a residual, because what the sweep takes is the `wch…` directory above them; and
+    # that reach cuts both ways, because `just scratch-sweep` passes an age of zero and takes
+    # everything, so a sweep run beside a live floor now takes the trees the floor is building
+    # in. It is the same exposure every other scratch user already had, over a run that lasts
+    # hours rather than seconds.
+    build_root="${WCH_MUTANTS_BUILD_ROOT:-$(gate_scratch_root)/wch-mutants-build}"
+    mkdir -p "$build_root"
+    # wch-scratch-exempt: cargo-mutants reads the build root out of the environment
+    export TMPDIR="$build_root"
+
     # The job count is then trimmed to what the build root can actually hold, out loud, from a
     # per-job figure measured with the debug info off — **and one job's worth is held back**.
     #
     # The reserve is not caution, it is a defect this job already had (note **N66**). Dividing
     # the free space by the per-job figure spends the whole filesystem: on this host that was
-    # five jobs at three GiB in a sixteen GiB `tmpfs`, 15/16 of it, and the P4f boundary run
-    # died fifteen minutes in with `Disk quota exceeded` — because the figure was measured on a
-    # workspace that has since grown a crate, and a build tree that is now a little over three
-    # GiB needs the sixteenth. What made that worse than slow is what it *said*: the floor
-    # exited 137 and reported FAIL, which is the same verdict a surviving mutant gets. A gate
-    # whose resource budget can spell itself as a survivor is N52's finding in a second
+    # five jobs at three GiB in a sixteen GiB `tmpfs`, 15/16 of it, and the P4f boundary run died
+    # fifteen minutes in with `Disk quota exceeded` — because the figure was measured on a
+    # workspace that has since grown a crate. What made that worse than slow is what it *said*:
+    # the floor exited 137 and reported FAIL, which is the same verdict a surviving mutant gets.
+    # A gate whose resource budget can spell itself as a survivor is N52's finding in a second
     # dimension, and N60 records what the reflex costs — a run that is re-run until it agrees is
     # a run nobody reads. So the figure stays the measurement it is, and the *budget* leaves a
     # tree's worth of room.
-    # **The one thing the 2026-08-12 ruling deliberately did not move** (note N84). That
-    # ruling put test scratch under `target/` because a leak filled a tmpfs; this is not that
-    # leak and moving it would be a knowing 7× regression in the measurement two paragraphs
-    # up — the same run with its build directories on the disk that holds `target/` went from
-    # about seven mutants a minute to under one. It is also already bounded in the way the
-    # ruling asks for: the budget below reserves a whole build tree and answers a shortfall
-    # with a no-verdict rather than a FAIL, the `EXIT` trap and cargo-mutants' own cleanup
-    # take the trees on the normal path, and `gate_scratch_sweep` reaches this root too. What
-    # the sweep does *not* reach is what cargo-mutants names itself, `cargo-mutants-*`, which
-    # note N84 records as a residual rather than pretending otherwise.
-    # wch-scratch-exempt: the mutation floor's build trees, measured at 7× on tmpfs (E7, N66)
-    build_root="${WCH_MUTANTS_BUILD_ROOT:-${TMPDIR:-/tmp}}"
-    mkdir -p "$build_root"
-    # wch-scratch-exempt: cargo-mutants reads the build root out of the environment
-    export TMPDIR="$build_root"
-
-    per_job_gib=3
+    #
+    # The figure is four because that is what was last measured, rounded the safe way: the build
+    # tree the 2026-08-21 run left behind was 3.5 GiB, this arithmetic is integer, and the
+    # direction that has now failed twice is the one where the figure is smaller than a tree. It
+    # is a floor rather than a ceiling — that run died before it finished, so its tree had not
+    # finished growing either — and the next run that dies on space is evidence this number moved
+    # again rather than evidence about the code.
+    #
+    # This is note **N52**'s discipline rather than its reversal. That entry held the figure at
+    # three and wrote down why — a tree measured at 2.5 GiB during the P4c triage — and refused
+    # to pad it, in its words, "on a guess". The number moves here because a tree was measured
+    # again, at 3.5 GiB on 2026-08-21, and four is that measurement rounded up by the integer
+    # division below. A figure raised to buy headroom would stop being a measurement; a figure
+    # left at a superseded one stops being current. Re-measure it, do not argue with it.
+    per_job_gib=4
+    # A whole tree stays held back, and the reason changed with the root rather than expiring
+    # with it. On the 135 GiB `df` reports free for this checkout the reserve costs nothing:
+    # `fits` stays far above `jobs`, the run takes every core it asked for, and the subtraction
+    # only bites when the room is nearly gone — which is when it should. What it now protects is
+    # also different. The build trees share a filesystem with `target/` itself, which this run's
+    # own baseline build is still growing while the mutants run, so the tree held back is room
+    # for this job's own work and not only for the last mutant.
     reserve_gib="$per_job_gib"
     avail_gib="$(df -BG --output=avail "$build_root" | tail -1 | tr -dc '0-9')"
     fits=$(((avail_gib - reserve_gib) / per_job_gib))
@@ -371,17 +616,12 @@ else
     # form of "skip reads as pass" this repository has a rule against. It ends on `PARTIAL`,
     # says how many it tested, and names the claim it is not making.
     #
-    # Both spellings route here. `just mutants --iterate` forwards the flag through `"$@"`,
-    # and a flag that reached cargo-mutants without passing this block would enable the mode
-    # with none of the accounting — one mode with two doors, one of them unwatched.
+    # Both spellings route through one decision, and since the precondition above needs the
+    # answer before anything runs, that decision is taken there: `WCH_MUTANTS_ITERATE=1` and a
+    # `--iterate` in `"$@"` set the same `iterating`. What stays here is the flag itself and the
+    # accounting, because a flag that reached cargo-mutants without passing this block would
+    # enable the mode with none of it — one mode with two doors, one of them unwatched.
     declare -a extra=()
-    iterating=0
-    if [[ "${WCH_MUTANTS_ITERATE:-0}" == "1" ]]; then
-        iterating=1
-    fi
-    for arg in "$@"; do
-        [[ "$arg" == "--iterate" ]] && iterating=1
-    done
     if ((iterating == 1)); then
         # Added here rather than left in `"$@"` so the flag is passed exactly once however it
         # arrived; cargo-mutants takes it twice without complaint, but a script that could not
