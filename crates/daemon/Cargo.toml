@@ -56,8 +56,19 @@ workspace = true
 # the argument); `matched-path` and `original-uri`, which exist for middleware that branches
 # on what it matched, and this gate deliberately branches on nothing; `tower-log` and
 # `tracing`, which are axum's own logging, where this daemon's is `daemon::logging`'s one
-# decision. `http2` is off because nothing reaches this listener but a browser on a socket
-# D11 defaults to loopback.
+# decision.
+#
+# **`http2` is off here and the process still serves HTTP/2, and those are two sentences**
+# (note **N351**). Off here means axum's own `#[cfg(feature = "http2")]` code is not compiled
+# — notably its RFC 8441 extended CONNECT, which is why a WebSocket over h2 would not work.
+# It does not mean the daemon declines an h2 preface. Cargo unifies features per crate build,
+# `jsonrpsee-server` hardcodes `hyper = { features = ["server", "http1", "http2"] }` and
+# `hyper-util`'s `server-auto` with no `[features]` table to turn either off, and
+# `axum::serve` hands every connection to hyper-util's `auto::Builder`, which sniffs the
+# preface and serves it. Measured, not read off the cfgs: `curl --http2-prior-knowledge`
+# gets `2 200` on a static asset, `2 401` from the token gate, and `2 200` for a `wch_list`
+# over the Unix socket. Nothing we can set at this end changes that while jsonrpsee-server
+# asks for it; what it costs is that `h2` is a dependency whose advisories are ours to track.
 #
 # **`ws` is still off, and P5b is the sub-milestone that decided to leave it that way.** That
 # feature is `axum::extract::ws` — axum's own upgrade extractor and its own `Message` type,

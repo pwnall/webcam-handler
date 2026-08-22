@@ -32301,3 +32301,77 @@ literals, named counted skips). But **1646 of 1706 tests, and four of `just ci`'
 `doc`, `deny`, `hygiene` and `gates`, which is 43 predicates and 658 selftest arms — have still never
 executed on a runner.** A sweep is an audit, not a run. Read what the runner says next before
 concluding anything about the class.
+
+---
+
+## N351 — `http2` is off in the feature we set and on in the code that runs, so the daemon answers an HTTP/2 preface on both transports
+
+**Doc:** design **D10** (one wire surface) and **D11** (the opt-in loopback listener, token-gated);
+AGENTS' *Hardware and privacy* (*the token gates the routes that carry or drive the camera*) and
+*Docs and dependencies* (*feature doors gate-held*); note **N349**'s standing paragraph on the four
+advisories the owner owes a disposition. Raised by `cargo deny check advisories` reporting
+RUSTSEC-2026-0258 against `h2`, and established by driving the running daemon. Recorded 2026-08-22.
+
+**Repo:** `Cargo.lock` (`h2 0.4.15` → `0.4.18`); `crates/daemon/Cargo.toml`'s `axum` comment, which
+said something true about axum and false about the process.
+
+### The advisory, and why the bump is the whole of its repair
+
+RUSTSEC-2026-0258 (2026-08-17, low severity, aliases GHSA-q83h-524g-xf6h) is unbounded queued empty
+DATA frames in `h2` — unbounded memory or a length overflow panic — patched in `>= 0.4.16`.
+`cargo update -p h2` reaches `0.4.18` and clears it. The complete lockfile delta is one package swap
+plus six Windows-only edges re-pointing between two `windows-sys` versions already in the lock;
+`h2 0.4.15` through `0.4.18` declare an identical dependency set, so the bump pulls nothing new in.
+No `[workspace.dependencies]` row moves — there is no `h2` row and `hyper`'s §2.8 row is already
+marked **(lock only)** — and `dependency-registry-sync.sh` does not read `Cargo.lock` by its own
+stated design, so `Cargo.lock` is the entire deliverable. `--locked` is what makes committing it
+mandatory rather than optional.
+
+### The half worth writing down: we thought that code did not run
+
+`crates/daemon/Cargo.toml` carried, in the paragraph explaining axum's feature set, the sentence
+*"`http2` is off because nothing reaches this listener but a browser on a socket D11 defaults to
+loopback."* That is true about **axum's** `http2` feature and false about the **process**, because
+Cargo unifies features per crate build and `jsonrpsee-server 0.26.0` hardcodes
+`hyper = { features = ["server", "http1", "http2"] }` and `hyper-util = { features = [… "server-auto"] }`
+with no `[features]` table of its own to turn them off. So `hyper` and `hyper-util` are both built
+with `http2` on, and `axum::serve` hands every connection to hyper-util's `auto::Builder`, which
+sniffs the preface and — compiled with `http2` — serves it. Setting `default-features = false` on any
+direct dependency cannot change this; the edge belongs to jsonrpsee-server, not to us.
+
+**Measured on the running daemon, not read off the cfgs.** `webcam-handler-daemon --backend fake
+--profile corpus/profiles/chicony-rgb.json --http 127.0.0.1:0`, then `curl -w '%{http_version}'`:
+
+| Request | Version | Status |
+|---|---|---|
+| `GET /` (static asset, ungated) | 1.1 | 200 |
+| `GET /` with `--http2-prior-knowledge` | **2** | 200 |
+| `POST /rpc` with `--http2-prior-knowledge`, no token | **2** | 401 |
+| `POST` over the Unix socket, `wch_list` | 1.1 | 200 |
+| the same over the Unix socket with `--http2-prior-knowledge` | **2** | 200 |
+
+Both transports. The third row is the load-bearing one: the 401 is the D11 token gate refusing, and
+it was produced **over an established HTTP/2 connection** — the h2 state machine runs before the
+gate does, because the gate is a per-request axum layer over a connection hyper already accepted.
+The fifth row is the same fact without a gate at all: the Unix socket is protected by its 0700
+directory, and it answered a real JSON-RPC call over h2.
+
+So the advisory was live against a path this daemon actually exposes, not against dead code, and the
+bump is a fix rather than lockfile hygiene. The comment has been corrected to say what is set and
+what runs, which are two sentences and were being written as one.
+
+**What this does not change.** Nothing the web client does needs HTTP/2 — one WebSocket for JSON-RPC,
+one `<img>` on the `multipart/x-mixed-replace` preview, `<img>`/fetch for `/session-photo`, no SSE —
+and no browser opens HTTP/2 to a plaintext `http://` loopback origin, so the page always gets
+HTTP/1.1 in practice. Turning the protocol off is not available at our end while jsonrpsee-server
+asks for it, and refusing an h2 preface at the door would be a hand-written sniffer in front of
+hyper's, which is a worse thing to own than a current `h2`. The disposition is: take the fix, keep
+the lock current, and stop describing the listener as HTTP/1.1-only.
+
+### The other three advisories are one crate and are not repaired here
+
+RUSTSEC-2024-0436 (`paste`, unmaintained) and RUSTSEC-2026-0194 / RUSTSEC-2026-0195 (`quick-xml`)
+all arrive through `little_exif 0.6.23`, which is the newest published version and pins
+`quick-xml ^0.37.5` and `paste ^1.0.15` unconditionally — no lockfile move reaches any of them, and
+the crate has no `[features]` table to escape through. That is its own sub-milestone and its own
+entry.

@@ -47,12 +47,27 @@ Carried from v2, with the third upgraded from convention to harness:
 
 ### `just ci` (offline, ≡ CI by construction)
 
-`fmt-check` → `lint` (clippy `--locked --workspace --all-targets -- -D warnings`) →
+`preflight` (`uapi-constants-are-declared.sh`) → `fmt-check` → `lint` (clippy
+`--locked --workspace --all-targets -- -D warnings`) →
 `test` (`cargo nextest run --locked --workspace --no-tests=fail`, retries 0) → `doc`
 (`RUSTDOCFLAGS="-D warnings"`) → `deny` (`cargo deny --offline check bans licenses
 sources`) → `hygiene` (typos, cargo machete, shellcheck over `scripts/` including
-`scripts/gates/`) → `gates` (`run-all.sh`, then `selftest.sh`). `ci.yml` runs `just ci`
-verbatim; the divergence target stays zero.
+`scripts/gates/`) → `gates` (`run-all.sh`, then `selftest.sh`). `ci.yml`'s first job runs
+`just ci` verbatim; the divergence target stays zero.
+
+`preflight` joined the front at commit `0076275` and is the **one predicate that runs
+twice** — here, before anything is compiled, and again inside `gates` with the other 42.
+The duplication is the point rather than an oversight: its subject is whether the tree can
+be compiled at all, so left at the end it never gets to speak, and note **N349** is the
+episode where it did not. It is one row of `run-all.sh`'s population either way; this
+execution adds nothing to any register.
+
+**`ci.yml` has a second job, and `just ci` is not it.** `cargo deny check advisories
+(networked)` runs the RustSec check that `just ci`'s offline `deny` step deliberately
+omits, because an advisory database moves under a pinned lockfile without any commit
+touching the tree — so a new advisory turning that job red is news rather than a
+regression in whatever pushed. It is not `continue-on-error`: a red advisory is a red
+badge, and the disposition is owed rather than optional.
 
 ### Lint configuration
 
