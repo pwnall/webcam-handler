@@ -133,7 +133,70 @@ gate_socket_scratch_root() {
     printf '%s\n' "${root%/}"
 }
 
-# Reclaim scratch that no run is coming back for, from both roots. Prints what it did.
+# Where the mutation floor's build trees go: a top-level directory under `target/`, and a short
+# one. Absolute, no trailing slash.
+#
+# **The ruling (owner, 2026-08-22):** "it's ok to use multiple top-level directories under
+# `target/` to get shorter paths. We dictate that directory's shape via the Cargo configuration
+# and the code + scripts in the repository." What asked for it is a budget rather than a taste.
+# `scripts/mutants.sh` hands cargo-mutants its build root by exporting it as the platform
+# temporary directory, and `engine::paths::TempRuntimeDir` — where this budget is argued, and the
+# doc to read beside this one — puts a daemon's `AF_UNIX` socket under that same variable
+# *because* `sun_path` holds 107 usable bytes (`schema::limits::MAX_UNIX_SOCKET_PATH_BYTES`). So
+# every byte of this name is spent twice: once here, and once inside every socket a test binds
+# while the floor is running.
+#
+# The arithmetic, measured on this checkout — the suffix by binding one, the roots by
+# `${#root}`:
+#
+#      35 bytes  /wchXXXXXX/webcam-handler/wchd.sock  — the suffix `TempRuntimeDir` joins
+#      74 bytes  <checkout>/target/wch-scratch/wch-mutants-build, so 109 against a bound of 107
+#      49 bytes  <checkout>/target/wchm, so 84, with 23 bytes of headroom
+#
+# The six characters after the `wch` prefix are `tempfile`'s, not ours: `NUM_RAND_CHARS` is 6 in
+# the pinned 3.27.0, and `TempRuntimeDir` sets a prefix and leaves the random half alone. A
+# reader who counts eight of them gets 37, 111 and 86, which is the same conclusion two bytes
+# too pessimistic in every row — worth knowing because a figure copied from a placeholder is how
+# this table was first written.
+#
+# cargo-mutants' own build tree does not enter this sum, and which side of the socket it falls
+# on is worth stating: `copy_tree` makes `cargo-mutants-webcam-handler-XXXXXX.tmp` *in*
+# `$TMPDIR`, so it sits beside the socket directories rather than above them, and
+# `TempRuntimeDir` reads the same `$TMPDIR` the floor exported because cargo-mutants adds
+# environment variables to the set it inherits rather than rewriting that one. Its 39
+# characters would put a root at 89 bytes and a socket at 124 if that ever stopped being true,
+# which is the first thing to measure if this budget starts failing where the table says it
+# fits.
+#
+# The middle line is what the floor's first default under `target/` cost, and it is not a
+# hypothetical: the first run under it died in `crates/daemon/src/systemd.rs` with `a short
+# path: Os { code: 36, kind: InvalidFilename, message: "File name too long" }`, two bytes over,
+# and cargo-mutants reported the baseline red in an unmutated tree. The overflow answers in more
+# than one spelling — the neighbouring bind in that file is `UnixListener::bind`, which refuses
+# the same path with `path must be shorter than SUN_LEN` — so what identifies it is the
+# arithmetic and not the message. A machine's shortfall wearing a defect's clothes is what notes
+# **N52**, **N66** and **N68** each cost a session.
+#
+# **Lengthening this name spends that headroom**, and the twenty-three bytes are not spare: they
+# belong to *where somebody cloned this repository*, so a checkout deeper than this one pays the
+# difference out of the same twenty-three. `wch-mutants` would leave sixteen. Whoever wants the
+# descriptive name should meet that number first and decide whose checkout is being spent on it.
+#
+# $WCH_MUTANTS_BUILD_ROOT is deliberately **not** read here, and `scripts/mutants.sh` still
+# honours it: that variable is how a caller asks for a filesystem of their own, and this function
+# answers the different question of which directory *this repository* owns for the job.
+# `gate_scratch_sweep` below empties this one entry by entry with no `wch*` floor, which is only
+# defensible because the directory is ours and everything in it is one run's leftovers; doing
+# that to a directory a caller named would be a sweep emptying somebody else's filesystem.
+#
+# Nothing is created here, unlike `gate_scratch_root`: `scripts/mutants.sh` makes it when it is
+# about to build in it, and a sweep that created the directory it came to empty would be
+# reporting on its own leftovers.
+gate_mutants_build_root() {
+    printf '%s/target/wchm\n' "$(gate_checkout)"
+}
+
+# Reclaim scratch that no run is coming back for, from all three roots. Prints what it did.
 #
 #   $1  the age in minutes below which an entry is presumed live (default 1440, a day)
 #
@@ -144,33 +207,57 @@ gate_socket_scratch_root() {
 # (`selftest.sh` calls it before it starts) and by a person (`just scratch-sweep`, which
 # passes 0 and takes everything).
 #
-# Only entries named `wch*` are touched, which is every name any of these scripts and
-# `engine::paths::scratch_dir` produce. That is a deliberate floor rather than a filter for
-# tidiness: `target/wch-scratch/` is also where the R1-web rung leaves the traces and
-# screenshots a person opens *after* a failing run, and where a hardware session parks its
-# transcripts, and a sweep that took those would be a sweep nobody dares run.
+# **The pattern is per root, because the two shared roots and the floor's own are different
+# places.** In `gate_scratch_root` and `gate_socket_scratch_root` only entries named `wch*` are
+# touched, which is every name any of these scripts and `engine::paths::scratch_dir` produce.
+# That is a deliberate floor rather than a filter for tidiness: `target/wch-scratch/` is also
+# where the R1-web rung leaves the traces and screenshots a person opens *after* a failing run,
+# and where a hardware session parks its transcripts, and a sweep that took those would be a
+# sweep nobody dares run.
+#
+# `gate_mutants_build_root` is emptied of **everything** instead, and the `wch*` floor there
+# would reclaim the wrong half. Two things write into that root, because `scripts/mutants.sh`
+# exports it as `$TMPDIR` for the whole run: cargo-mutants puts its `cargo-mutants-*.tmp` build
+# trees there, which are the gigabytes, and a test process killed before its `Drop` runs — which
+# is what cargo-mutants does to a mutant that hangs — leaves a `TempRuntimeDir` behind there as
+# `wch…`, which is a socket and an empty state tree. So a floor that matched `wch*` would take
+# the kilobytes and walk past every gigabyte. What makes taking everything safe is not the
+# pattern but the directory — one this repository created for one job, whose only writers are
+# that job and the tests it runs — which is why the function above resolves the root this
+# project owns and never the one $WCH_MUTANTS_BUILD_ROOT points at.
 #
 # What it does not cover is named in note N84, as that note's own 2026-08-21 amendment leaves
-# the list: a caller's own $WCH_GATE_SCRATCH somewhere else, and anything under either root
-# that a person named something other than `wch…`. cargo-mutants' `cargo-mutants-*` build
-# trees came off that list when the owner moved the mutation floor's build root under this one
-# (note N347), because what this takes is the `wch…` directory above them — and they go back
-# on it for whoever points $WCH_MUTANTS_BUILD_ROOT at another filesystem.
+# the list: a caller's own $WCH_GATE_SCRATCH somewhere else, and anything under either shared
+# root that a person named something other than `wch…`. cargo-mutants' build trees came off
+# that list when the owner moved the mutation floor's build root under `target/` (note N347),
+# and they stay off it under the short root of the 2026-08-22 ruling because this sweep empties
+# that root entry by entry — and they go back on it for whoever points $WCH_MUTANTS_BUILD_ROOT
+# at another filesystem, whose contents are that caller's to reclaim.
 gate_scratch_sweep() {
-    local age="${1:-1440}" root swept=0 entry plural='ies'
-    for root in "$(gate_scratch_root)" "$(gate_socket_scratch_root)"; do
+    local age="${1:-1440}" spec root pattern swept=0 entry plural='ies'
+    # Root and pattern travel together, tab-separated, because the choice of pattern is a fact
+    # about which root this is and a second array would be a second place to keep them in step.
+    local -a plan=(
+        "$(gate_scratch_root)"$'\t''wch*'
+        "$(gate_socket_scratch_root)"$'\t''wch*'
+        "$(gate_mutants_build_root)"$'\t''*'
+    )
+    for spec in "${plan[@]}"; do
+        root="${spec%%$'\t'*}"
+        pattern="${spec#*$'\t'}"
         [[ -d "$root" ]] || continue
         while IFS= read -r -d '' entry; do
             if rm -rf "$entry"; then
                 swept=$((swept + 1))
             fi
-        done < <(find "$root" -mindepth 1 -maxdepth 1 -name 'wch*' -mmin "+$age" -print0 2>/dev/null)
+        done < <(find "$root" -mindepth 1 -maxdepth 1 -name "$pattern" -mmin "+$age" -print0 2>/dev/null)
     done
     if ((swept == 1)); then
         plural='y'
     fi
-    printf 'scratch-sweep: reclaimed %s abandoned entr%s older than %s minute(s), from %s and %s\n' \
-        "$swept" "$plural" "$age" "$(gate_scratch_root)" "$(gate_socket_scratch_root)"
+    printf 'scratch-sweep: reclaimed %s abandoned entr%s older than %s minute(s), from %s, %s and %s\n' \
+        "$swept" "$plural" "$age" \
+        "$(gate_scratch_root)" "$(gate_socket_scratch_root)" "$(gate_mutants_build_root)"
 }
 
 # --------------------------------------------------------------- the third outcome

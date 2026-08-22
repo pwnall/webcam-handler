@@ -210,9 +210,10 @@ no_verdict() {
 
 # This run's own bookkeeping — survivor lists, the sorted register, a throw-away criteria
 # table — which is kilobytes and goes where all test scratch goes since the 2026-08-12 ruling
-# (note N84). The *build* root is answered further down, at `build_root`, where the
-# measurement that used to except it and the 2026-08-21 ruling that withdrew the exception
-# both live.
+# (note N84). The *build* root is a different root and is answered further down, at
+# `build_root`, where the measurement that used to except it, the 2026-08-21 ruling that
+# withdrew the exception, and the 2026-08-22 ruling that gave it a short top-level directory of
+# its own all live.
 scratch="$(mktemp -d "$(gate_scratch_root)/wch-mutants.XXXXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
@@ -516,27 +517,48 @@ else
     # the machine, no one-shot budget can. That is an argument about the `tmpfs` rather than
     # about the arithmetic, and it is the second reason the default moves.
     #
-    # So the build root defaults to a directory under the scratch home everything else here
-    # already uses — `gate_scratch_root`, which is `target/` plus the name
-    # `schema::paths::SCRATCH_DIR` holds for both languages — and `WCH_MUTANTS_BUILD_ROOT` now
-    # points the other way: it is how somebody who wants the tmpfs speed, and accepts what
-    # filling a RAM-backed filesystem does to the machine, asks for it. That variable is not the
-    # only door, and saying so is the honest version of "never in `/tmp`": `gate_scratch_root`
-    # honours `$WCH_GATE_SCRATCH` first, which `lib.sh` offers as the way to put the bulk of test
-    # scratch on another filesystem, so a caller who has already moved every gate's scratch onto
-    # a `tmpfs` has moved these trees there with it. What the ruling settles is what this script
-    # chooses when nobody has asked for anything.
+    # So the build root defaults to a directory under `target/` — `gate_mutants_build_root`,
+    # beside the two other scratch roots in `lib.sh` — and `WCH_MUTANTS_BUILD_ROOT` now points
+    # the other way: it is how somebody who wants the tmpfs speed, and accepts what filling a
+    # RAM-backed filesystem does to the machine, asks for it. What the ruling settles is what
+    # this script chooses when nobody has asked for anything.
     #
     # Three things follow that the exception did not have. `target/` is gitignored and carries
     # cargo's `CACHEDIR.TAG`, so these trees are already declared regenerable and are invisible
     # to every gate that walks the tree; they now sit inside a directory this project names, so
     # `gate_scratch_sweep` reclaims them — including the `cargo-mutants-*` directories N84 had to
-    # record as a residual, because what the sweep takes is the `wch…` directory above them; and
-    # that reach cuts both ways, because `just scratch-sweep` passes an age of zero and takes
-    # everything, so a sweep run beside a live floor now takes the trees the floor is building
-    # in. It is the same exposure every other scratch user already had, over a run that lasts
-    # hours rather than seconds.
-    build_root="${WCH_MUTANTS_BUILD_ROOT:-$(gate_scratch_root)/wch-mutants-build}"
+    # record as a residual, because the sweep empties this root entry by entry rather than
+    # looking for the `wch…` names cargo-mutants does not write; and that reach cuts both ways,
+    # because `just scratch-sweep` passes an age of zero and takes everything, so a sweep run
+    # beside a live floor now takes the trees the floor is building in. It is the same exposure
+    # every other scratch user already had, over a run that lasts hours rather than seconds.
+    #
+    # ## Its own short directory under `target/`, and the two bytes that bought it
+    #
+    # **The ruling (owner, 2026-08-22):** "it's ok to use multiple top-level directories under
+    # `target/` to get shorter paths. We dictate that directory's shape via the Cargo
+    # configuration and the code + scripts in the repository."
+    #
+    # This is not tidiness and the root is not a child of `target/wch-scratch/`, which is where
+    # the 2026-08-21 ruling first put it. **The line below exports the build root as `$TMPDIR`,
+    # and `engine::paths::TempRuntimeDir` builds its socket paths under `$TMPDIR` on purpose**,
+    # because `sun_path` holds 107 usable bytes and a socket path is not something a test may
+    # spend a checkout's depth on. That doc comment is where the budget is argued and is the one
+    # to read beside this; `gate_mutants_build_root` carries the arithmetic for this root. The
+    # short version is that the socket suffix is 35 bytes,
+    # `<checkout>/target/wch-scratch/wch-mutants-build` is 74, and 109 is two bytes over the
+    # bound: the first run under that default died in `crates/daemon/src/systemd.rs` with `a
+    # short path: Os { code: 36, kind: InvalidFilename, message: "File name too long" }`, and
+    # cargo-mutants reported it as a red baseline in an unmutated tree — a machine's shortfall
+    # wearing a defect's clothes, which is this file's whole no-verdict vocabulary. The short
+    # root is 49 bytes and leaves 23 to spare.
+    #
+    # `$WCH_GATE_SCRATCH` is no longer a second door onto this decision, and that is a change
+    # from the 2026-08-21 default worth stating: the root has stopped hanging off
+    # `gate_scratch_root`, so a caller who has moved every gate's scratch onto a `tmpfs` has
+    # **not** moved these trees there with it. `WCH_MUTANTS_BUILD_ROOT` is the one door, which is
+    # the variable the paragraphs above already name.
+    build_root="${WCH_MUTANTS_BUILD_ROOT:-$(gate_mutants_build_root)}"
     mkdir -p "$build_root"
     # wch-scratch-exempt: cargo-mutants reads the build root out of the environment
     export TMPDIR="$build_root"

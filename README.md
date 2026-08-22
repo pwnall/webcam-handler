@@ -214,12 +214,24 @@ compile. Rather than a version number this repository cannot verify offline,
 that crate asks bindgen for and names the missing one (note **N236**), so the answer arrives
 as a gate with a remedy instead of as `cannot find value … in module uapi`.
 
+**CI runs on `ubuntu-26.04`, whose stock headers satisfy this.** That release ships the 7.0
+kernel headers, which define the newest control types named above; `ubuntu-24.04` ships 6.8,
+which does not, and a runner on that image had never met the precondition. So
+`.github/workflows/ci.yml` takes `linux-libc-dev` from the release's own apt like every other
+build dependency, and the runner and this project's development host — also Ubuntu 26.04 —
+agree on a header vintage by construction rather than by a pinned artifact. A host whose
+headers predate those names cannot build this crate's test target at all, and that is the
+precondition **N236** declared rather than a defect to work around: `just ci` asks the
+question before it compiles anything, so what a builder on old headers meets is the gate's
+sentence and its remedy rather than the compiler's.
+
 ### Required for `just ci`
 
-`just ci` is the floor — fmt, clippy with `-D warnings`, nextest, the doc build,
-`cargo-deny`, the hygiene step, then every gate predicate and the self-test that proves
-each one can go red. It runs **offline** by construction, and `.github/workflows/ci.yml`
-runs that same recipe verbatim so a green laptop and a green runner mean the same thing.
+`just ci` is the floor — the header precondition above, then fmt, clippy with `-D warnings`,
+nextest, the doc build, `cargo-deny`, the hygiene step, then every gate predicate and the
+self-test that proves each one can go red. It runs **offline** by construction, and
+`.github/workflows/ci.yml` runs that same recipe verbatim so a green laptop and a green
+runner mean the same thing.
 That workflow's install step is the authoritative list; this is it, plus `git`:
 
 ```sh

@@ -25,13 +25,23 @@
 #
 # ## What it checks
 #
-#   1. **The homes exist and agree.** `gate_scratch_root` and `gate_socket_scratch_root` in
-#      `scripts/gates/lib.sh`, `scratch_root` and `SCRATCH_DIR` in `schema::paths`, and
-#      `scratch_dir` in `engine::paths`. A gate that only counted violations would be green
-#      forever on a tree where the home had been deleted and the literal inlined at every call
-#      site — which is the state this repository was in the day before the ruling, at nineteen
-#      files. The two languages are also checked to name the *same* directory, read out of
-#      `SCRATCH_DIR` rather than transcribed here, because one sweep has to reclaim both.
+#   1. **The homes exist and agree.** `gate_scratch_root`, `gate_socket_scratch_root` and
+#      `gate_mutants_build_root` in `scripts/gates/lib.sh`, `scratch_root` and `SCRATCH_DIR` in
+#      `schema::paths`, and `scratch_dir` in `engine::paths`. A gate that only counted
+#      violations would be green forever on a tree where the home had been deleted and the
+#      literal inlined at every call site — which is the state this repository was in the day
+#      before the ruling, at nineteen files. The two languages are also checked to name the
+#      *same* directory, read out of `SCRATCH_DIR` rather than transcribed here, because one
+#      sweep has to reclaim both.
+#
+#      **The third root is a home for the same reason the first two are, and it arrived with a
+#      budget attached** (owner ruling, 2026-08-22; the arithmetic is in `lib.sh` beside the
+#      function). The mutation floor's build trees live under a short top-level directory of
+#      their own under `target/`, because `scripts/mutants.sh` exports that root as `$TMPDIR`
+#      and `engine::paths::TempRuntimeDir` spends what is left of `sun_path`'s 107 bytes on a
+#      socket underneath it. A tree where that definition had gone back to a literal inside
+#      `mutants.sh` is a tree where the next person to lengthen the path meets no argument and
+#      no number, which is how the first attempt at this root went two bytes over the bound.
 #
 #   2. **Nothing else reaches for the platform's temporary directory.** Every `*.sh` in the
 #      tree, and every `*.rs`: no `$TMPDIR`, no `/tmp` literal, no `mktemp` without a
@@ -49,7 +59,8 @@
 # somebody has to read: the socket root itself, `TempRuntimeDir`'s `sun_path` budget, and the
 # line that hands the mutation floor's build root to cargo-mutants through `$TMPDIR` — which
 # is all that is left of that exemption since the owner's 2026-08-21 ruling moved the root
-# itself under `target/`, where this predicate would have put it anyway. Every one of them is
+# itself under `target/`, where this predicate would have put it anyway, and the 2026-08-22
+# ruling gave it a short directory of its own there. Every one of them is
 # printed on every run, with its file, its line and its reason, because an allowlist nobody
 # reads is a hole with a nice name.
 #
@@ -114,6 +125,7 @@ require_home() {
 
 require_home "$lib" '^gate_scratch_root\(\)' "where a shell script puts temporary data"
 require_home "$lib" '^gate_socket_scratch_root\(\)' "where a directory that will hold a Unix socket goes"
+require_home "$lib" '^gate_mutants_build_root\(\)' "where the mutation floor's build trees go, and the sun_path budget that keeps that name short"
 require_home "$lib" '^gate_scratch_sweep\(\)' "what reclaims scratch a killed run abandoned"
 require_home "$schema_paths" '^pub fn scratch_root\(\)' "where Rust puts temporary data"
 require_home "$schema_paths" '^pub const SCRATCH_DIR' "the name the two languages have to agree on"

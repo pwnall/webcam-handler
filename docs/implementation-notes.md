@@ -31834,6 +31834,31 @@ contention, and it prices that at 13–19 hours pending the owner's ruling. Toda
 having settled the jobs default; the two costs compound in a way nothing here has measured, and
 the first run under the new root is the measurement that would tell us by how much.
 
+**Amended 2026-08-22, the next day, because this entry's own repair broke the floor** (the owner's
+short-directory ruling, and the measurement below). Putting the build root at
+`target/wch-scratch/wch-mutants-build` was four characters of tidiness and two bytes too many. The
+next line of `mutants.sh` exports that root as `$TMPDIR`, and `engine::paths::TempRuntimeDir` builds
+socket paths under `$TMPDIR` **on purpose**, because `sockaddr_un::sun_path` gives 107 usable bytes
+and the platform's temporary directory is the shortest root there is — the one exception the
+2026-08-12 ruling itself allows. So the move carried every Unix socket in the suite with it: the
+35-byte suffix `/wchXXXXXX/webcam-handler/wchd.sock` on a 74-byte root is 109, and the floor died in
+its own baseline with `a short path: Os { code: 36, kind: InvalidFilename, message: "File name too
+long" }`, which cargo-mutants reported as a red baseline in an unmutated tree — a run that answered
+nothing, correctly, about a tree that was fine.
+
+Driven both ways before the repair was trusted, with one test and `$TMPDIR` set by hand:
+`…/target/wch-scratch/wch-mutants-build` (74) fails, `…/target/wchm` (49) passes at 84 with 23 bytes
+to spare. The owner's ruling that made the repair available is that `target/` may hold more than one
+top-level directory when a short path needs one — this repository dictates that directory's shape —
+so the root is `target/wchm`, defined once in `scripts/gates/lib.sh` beside the other two scratch
+roots with the arithmetic in its comment, and swept there rather than by a `wch*` pattern that would
+have reclaimed the kilobytes and walked past the gigabytes.
+
+**What this entry got wrong is worth keeping**, because it is not the ruling: the ruling was about a
+RAM-backed filesystem and is unchanged. What was wrong is that the entry moved a path without asking
+what else reads it, in a tree where one job's `$TMPDIR` is every socket's parent.
+
+
 **Retires when:** a build root exists on this machine that is large, fast and not RAM-backed, and
 the owner rules on it with the throughput measured either side — or the floor's build trees stop
 being gigabytes each, at which point the whole argument is about a filesystem nobody can fill.
@@ -31994,3 +32019,165 @@ reads stop being the record of where the work is. Until then, re-read this entry
 that the tree-recording block and this precondition be merged: they read the same `git` state and
 answer two different questions, and collapsing them would either make a dirty tree a finding, which
 N68 refuses, or let a long run start on work nothing else holds, which this note is.
+
+## N349 — The build precondition N236 declared had never been satisfied on the one host that builds every push
+
+**Doc:** note **N236**, which declared this precondition and built the gate that names it, and
+note **N228**, whose tables created it; AGENTS' *Done means* (`just ci` green locally and offline)
+and rule 3 (*CI executes what it claims*, and an auto-skipping rung reports a named, counted skip
+rather than silence); the README's *Required to build*, where the declaration lives; design §6's
+bindgen row and the owner's build-deps-are-fine ruling (\[PF:10\]). Raised by the owner from a red
+Actions badge and established by measurement. Recorded 2026-08-22.
+
+**Repo:** `.github/workflows/ci.yml` — the runner image both jobs name; `justfile`'s `preflight`
+row, which puts `scripts/gates/uapi-constants-are-declared.sh` first in `just ci`; the README's
+*Required to build*.
+
+### What was actually wrong, which is neither the code nor N236's ruling
+
+GitHub Actions has been red on **every** run this repository has a record of: the last hundred
+recorded runs contain no success at all, and the most recent twelve — from 2026-08-19 on — end in
+the `just ci` job at about 2m50s on the same lines:
+
+```
+error[E0425]: cannot find value `v4l2_ctrl_type_V4L2_CTRL_TYPE_RECT` in crate `uapi`
+error: cannot find value `V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX` ... not found in `uapi`
+error: could not compile `webcam-handler-v4l2` (lib test) due to 2 previous errors
+error: recipe `lint` failed on line 22 with exit code 101
+```
+
+That is N236's own paragraph happening, word for word: `v4l2-sys-mit`'s build script runs bindgen
+over *the build host's* `<linux/videodev2.h>`, the runner was `ubuntu-24.04`, its `linux-libc-dev`
+is 6.8, and 6.8 defines neither of the two names quoted above. Measured rather than assumed: the
+6.8.0-139.139 header out of the Ubuntu pool contains no occurrence of either name, and the 7.0.0
+header this project is developed on answers the gate green over all 46 kernel names it walks out
+of `crates/backends/v4l2/src/`.
+
+So the code is right, N228's tables are right, N236's ruling is right, and the gate is right.
+**The defect is that a precondition declared in the README and in design §6 had never been
+satisfied by the one machine that builds this repository on every push.** A declared precondition
+is a claim about hosts, and a host on which nobody ever installed it is not an exception the
+declaration tolerates; it is the declaration never having been carried out. N236 chose to
+*declare* this rather than avoid it — "a weaker claim wearing a quieter build" was the alternative
+it refused — and a declaration is only worth what the hosts do about it.
+
+**And it was not the only thing that host disagreed with the laptop about.** Two runs sampled from
+before N228 landed end earlier in the same recipe, on `hygiene`: `ubuntu-24.04` installs
+shellcheck 0.9.0, which reports 13 SC2317 findings ("command appears to be unreachable") against
+`scripts/gates/cli-parity.sh`'s cleanup handler, while the 0.11.0 this project is developed on
+reports none over the same files. Same tree, same command, two answers — one number is a tool
+vintage and the other is a header vintage, and both are the same shape of defect. That measurement
+is why the remedy below is a release rather than an artifact: a fix that pinned only the header
+would have moved this run's red from `lint` to `hygiene` and called it green work.
+
+**A second red is still standing, and it is not this one.** The `advisories` job has failed on
+every run sampled back to 2026-08-16, on four RustSec advisories — RUSTSEC-2026-0258 (`h2`),
+RUSTSEC-2024-0436 (`paste`, unmaintained), RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (`quick-xml`).
+That is the job doing exactly what `ci.yml` says it is for — "a new advisory turning this job red
+is news, not a regression in the commit that got it" — so it is a disposition the owner owes those
+four advisories, not a build to repair. It is recorded here because the badge stays red until they
+are dispositioned, and a reader who takes a red badge as evidence about *this* entry's repair will
+be reading the wrong job.
+
+### Why it went unnoticed for days, which is the more useful half of this entry
+
+**Because it is invisible from the development host.** Here the headers are 7.0.0, `just ci` is
+green, the gate is green, and every boundary this project lands work at is met. Nothing a
+developer or an agent runs on this machine can go red for this reason, and nothing on this machine
+reads what the runner answered.
+
+That is a gap between two definitions of green. AGENTS says work lands in sub-milestones ending at
+committed boundaries with `just ci` green, and the boundary that sentence is checked at is the
+local one; the runner has its own answer to the same command on a different host, and **nothing in
+the tree reconciles the two.** There is no gate that reads the last Actions conclusion, no test
+that fails when the badge is red, and no recipe whose green depends on the runner's. The result is
+a repository whose whole convention is that work lands green, sitting on a hundred consecutive red
+runs, with both statements true at once and neither one able to see the other.
+
+The lesson is narrower than "watch the badge", and it is the one this entry exists to leave: a
+precondition that a build host must satisfy is a fact about *each* host, and the hosts this
+project builds on are two — this machine and the runner. A precondition verified on one of them is
+verified on half the population, and the half that runs unattended on every push is the half
+nobody was looking at. The corollary is worth writing down too: because the runner has never got
+past `lint` or `hygiene`, no recorded run has ever executed `test`, `doc`, `deny` or `gates`
+there. What this entry repairs is the reason the runner stopped where it did; what the runner says
+about the rest of the floor is still unmeasured, and the first green run is the measurement.
+
+### The remedy: one release, named once, rather than one artifact pinned twice
+
+Both jobs run on `ubuntu-26.04`, which is the release this project is developed on.
+`linux-libc-dev` then arrives from that release's own apt like every other build dependency in the
+install step — 7.0.0-30.30 today, the exact package this machine carries — and so does shellcheck,
+at the 0.11.0 this machine carries. The property worth buying is not a version number; it is that
+the two definitions of green differ by no archive, so a name the crate asks bindgen for, or a
+finding a linter emits, is present or absent identically on both.
+
+The alternative considered and rejected was pinning the one `.deb` by URL and sha256 into the
+24.04 image. It buys the header and nothing else, it adds a URL that the pool will eventually stop
+serving, and the shellcheck measurement above is what settles it: the pin would have left the run
+red at the next step for the next tool whose vintage the two hosts disagree about.
+
+**The limits, stated rather than hidden.** Three, and each is a fact somebody will meet:
+
+- The label is the moving part, **and the owner took that bet knowingly** (2026-08-22). GitHub
+  lists `ubuntu-26.04` as a *preview* image while `ubuntu-latest` resolves to 24.04, and says in
+  as many words that "workflows that run on a beta image do not fall under the customer SLA".
+  The ruling weighed the two costs rather than the two risks: *"I am making a bet that any preview
+  status issues are less costly than maintaining workarounds for the 24.04 image."* The workaround
+  it is measured against is the one this batch deleted — a `.deb` pinned by URL and sha256, fetched
+  from an archive pool that rotates versions out, installed with `dpkg -i` over the release's own
+  package, and needing a paragraph of comment to say why none of that is as fragile as it looks.
+  That is a standing maintenance cost with a known failure mode; the preview label is an unknown
+  one that GitHub is actively working off. A label GitHub stops offering fails the job at start with
+  an unrecognised-runner error — before any step runs, and with no log that names a constant — which
+  is a different shape from a header shortfall and reads as what it is.
+- The coupling is *same release as the development host*, not *newest release*. The day this
+  machine moves to a newer Ubuntu than the runner offers, this arrangement is the one to
+  re-decide, and the question to ask is the one the gate asks: which names does the runner's
+  header define.
+- The tools `taiki-e/install-action` fetches — `just`, `cargo-nextest`, `cargo-deny`,
+  `cargo-machete`, `typos-cli` — are still taken at `latest` and are still a vintage the two hosts
+  do not share. That is the same class as the shellcheck finding, unaddressed on purpose here; a
+  new `typos` dictionary can turn a commit red that changed nothing, and pinning them is an owner
+  decision about how much of the runner this file is willing to name.
+
+**One hazard this repair does not create but does unblock.** `v4l2-sys-mit`'s build script prints
+no `cargo:rerun-if-changed`, so cargo re-runs bindgen only when the *crate's own* files change,
+never when the host's header does. A restored `target/` therefore carries bindings generated by
+whatever header the run that saved it had. It costs nothing today: `gh cache list` is empty and
+rust-cache saves only on success, so a hundred red runs have saved nothing. It becomes live after
+the first green run — the shape being a preflight that answers green over a header that defines
+the name while the compiler fails on a cached binding that predates it. The answer, when it is
+wanted, is to name the header vintage in the cache key so that a header change misses the cache.
+
+### The ordering defect, and that it is N236's intent unrealised
+
+N236 built the gate precisely so that a builder on old headers would get a remedy instead of
+`cannot find value`, and it says so: the check "answers before the twenty minutes, not after". The
+tree did not give it that position. `just ci` was `fmt-check lint test doc deny hygiene gates`;
+`lint` is `cargo clippy --locked --workspace --all-targets`, which compiles the lib test target
+and therefore meets the missing constants second, while `gates` is the last word in the recipe. So
+for twelve runs the compiler spoke and the gate did not — the predicate written to precede the
+build ran after it, in a job that never reached it.
+
+**The gate was never wrong. It was never asked.** The repair is one row: `just ci` is now
+`preflight fmt-check lint test doc deny hygiene gates`, and `preflight` runs
+`scripts/gates/uapi-constants-are-declared.sh` and nothing else. A host whose headers are short of
+a name is told which name, by the script whose whole design is to name it, before clippy gets a
+chance to say `E0425` instead — and that holds for a laptop as much as for the runner, which is
+why it lives in the recipe rather than in the workflow.
+
+That is not a second home for the law (design §2.10). There is no second list of names, no copy of
+the predicate and no version number written down anywhere: it is the same script, still shipped in
+the gate suite and still run inside `just ci` where `run-all.sh` counts it, called once more by
+the one caller that could not reach it in time. The predicate stays one row of that population,
+counted there exactly once; `run-all.sh` still reports the same 43. The preflight adds an
+*ordering*, which is what was missing, and nothing else.
+
+**Retires when:** the workspace stops naming kernel constants outside `crates/backends/v4l2/`'s
+product code — that is N236's own retirement condition, and it retires this note with it — or the
+runner image and this project's development host stop being the same Ubuntu release, at which
+point the arrangement is re-decided rather than patched. In that second case **keep the
+preflight**, because it is about the order the answer arrives in and not about any particular
+header vintage: the next constant N228's tables reach for will be newer than whatever the runner
+then ships, and the gate has to speak before the compiler again.

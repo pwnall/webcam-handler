@@ -33,13 +33,39 @@ env:
 jobs:
   ci:
     name: just ci (offline)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v5
 
       # bindgen runs at build time and needs libclang plus the kernel UAPI headers
       # (PF:10). These are build dependencies, which this project accepts; runtime
       # external binaries, which it does not, are absent by design.
+      #
+      # The runner is `ubuntu-26.04` for the headers' sake, and that is the whole of the
+      # arrangement. `v4l2-sys-mit`'s build script runs bindgen over *the build host's*
+      # `<linux/videodev2.h>`, so the kernel names `webcam-handler-v4l2` may use are
+      # whatever that host defines — note **N236**, which declared that a build
+      # precondition rather than drop the newest rows from N228's tables and leave those
+      # control types as the only ones nobody checks. `ubuntu-24.04` ships 6.8, which
+      # defines neither `V4L2_CTRL_TYPE_RECT` nor `V4L2_CTRL_FLAG_HAS_WHICH_MIN_MAX`, so
+      # that image had never satisfied the precondition; `ubuntu-26.04` ships 7.0 headers,
+      # which define both, and 26.04 is the release this project is developed on. So
+      # `linux-libc-dev` arrives from the release's own apt like every other build
+      # dependency in this step, and the runner and the laptop compile against the same
+      # header vintage by construction rather than by an artifact pinned to a URL that
+      # rotates — which is this file's opening sentence about a green laptop and a green
+      # runner, held by the image label instead of by a version number a maintainer has to
+      # keep re-pinning.
+      #
+      # `ubuntu-26.04` is a newer image label than `ubuntu-24.04`, and GitHub still lists
+      # it as a preview image while `ubuntu-latest` resolves to 24.04 — so the label is
+      # the one moving part here, and it is worth knowing what its absence would look
+      # like: a label that GitHub does not offer fails the job at start with an
+      # unrecognised-runner error, before any step runs and with no log that names a
+      # constant. A *header* shortfall is the other shape entirely, and `just ci`'s
+      # `preflight` row is what gives it words — `uapi-constants-are-declared.sh` reads
+      # this host's header and names each constant it could not find, which is the remedy
+      # N236 wrote itself to put in front of `cannot find value … in module uapi`.
       - name: Install build and lint tooling
         run: |
           sudo apt-get update
@@ -65,9 +91,15 @@ jobs:
       - name: just ci
         run: just ci
 
+  # This job compiles nothing: `cargo deny check advisories` resolves the graph from
+  # `Cargo.lock` through `cargo metadata`, which runs no build script, so bindgen never
+  # reads a header here and the precondition above does not reach this job. It is on
+  # `ubuntu-26.04` anyway, because a file that names one image is a file where nobody has
+  # to work out which job needed which — and if this job ever grows a step that builds,
+  # the image it grew on is already the right one.
   advisories:
     name: cargo deny check advisories (networked)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v5
 

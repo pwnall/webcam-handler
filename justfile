@@ -10,7 +10,35 @@ _default:
 
 # Everything CI runs, in CI's order. Offline by construction: no `cargo update`, no
 # advisory database fetch (that lives in the networked job).
-ci: fmt-check lint test doc deny hygiene gates
+ci: preflight fmt-check lint test doc deny hygiene gates
+
+# The one gate predicate that runs before the compiler does, and the only one that runs
+# twice in a full `just ci`.
+#
+# Every other predicate belongs where `gates` runs them, at the end, because every other
+# predicate judges a tree that has already been compiled and tested. This one is different in
+# kind: its subject is whether the tree can be compiled at all. `v4l2-sys-mit`'s build script
+# runs bindgen over **this host's** `<linux/videodev2.h>`, so a host whose headers predate the
+# newest control types cannot compile `webcam-handler-v4l2`'s test target — and `lint`, which
+# is `cargo clippy --all-targets`, is where that lands.
+#
+# Left at the end it never gets to speak. The compiler speaks first, minutes earlier, with
+# `cannot find value v4l2_ctrl_type_V4L2_CTRL_TYPE_RECT in module uapi` — which says nothing
+# about headers, nothing about which package supplies them, and nothing about what the run
+# therefore did not claim. That is note **N236**'s own remedy arriving after the thing it was
+# written to precede, and it is how CI failed on a runner whose stock headers were older than
+# these names: red in `lint`, with `gates` never reached and so never heard from.
+#
+# So the predicate runs here as well, and the second execution is the point rather than an
+# oversight. It is a duplicate **execution** and not a second registration: the predicate is
+# still one row of `run-all.sh`'s population, counted there exactly once, and this recipe adds
+# nothing to any register and changes nothing about what `gates` walks. The price is a grep
+# over one header, which is milliseconds against a clippy build that costs minutes — so the
+# cheap half of the answer arrives before the expensive half of the run.
+#
+# The build precondition, checked before anything is compiled: this host's kernel UAPI headers.
+preflight:
+    ./scripts/gates/uapi-constants-are-declared.sh
 
 fmt:
     cargo fmt --all

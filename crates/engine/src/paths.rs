@@ -163,11 +163,16 @@ impl TempRuntimeDir {
     /// anything is joined to it on the checkout this was measured on:
     ///
     /// ```text
-    /// 41 bytes  /tmp/wchXXXXXXXX/webcam-handler/wchd.sock
-    /// 93 bytes  <checkout>/target/wch-scratch/wchXXXXXXXX/webcam-handler/wchd.sock
+    /// 39 bytes  /tmp/wchXXXXXX/webcam-handler/wchd.sock
+    /// 91 bytes  <checkout>/target/wch-scratch/wchXXXXXX/webcam-handler/wchd.sock
     /// ```
     ///
-    /// 93 fits, with fourteen bytes of headroom that belong to *where somebody cloned this
+    /// The six characters after the prefix are `tempfile`'s `NUM_RAND_CHARS`, which is 6 in the
+    /// pinned 3.27.0 and which the builder below leaves alone; counting a placeholder's eight
+    /// instead adds two bytes to every row, which is what these two lines and
+    /// `scripts/gates/lib.sh`'s `gate_mutants_build_root` table both once did.
+    ///
+    /// 91 fits, with sixteen bytes of headroom that belong to *where somebody cloned this
     /// repository* rather than to anything in this file — and a suite whose verdict moves with
     /// the checkout path is notes N52, N66 and N68 in a fourth dimension. What is bounded by a
     /// kernel constant is kept on the shortest path available; the tmpfs the ruling was about
