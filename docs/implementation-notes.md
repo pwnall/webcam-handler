@@ -32181,3 +32181,123 @@ point the arrangement is re-decided rather than patched. In that second case **k
 preflight**, because it is about the order the answer arrives in and not about any particular
 header vintage: the next constant N228's tables reach for will be newer than whatever the runner
 then ships, and the gate has to speak before the compiler again.
+
+---
+
+## N350 — The first test a runner ever reached was an expectation about this laptop, and masking the field would have closed one spelling of that
+
+**Doc:** AGENTS' *Writing tests* (*"Expectations come from committed tables or independent
+derivations"*) and rule 2 (*every failing arm names the sentence it goes red on*, and the inverse
+is driven by the thing under test); note **N249** on banning the class rather than one spelling of
+it; note **N349**, whose repair is what let this be seen at all; design **D15**'s
+identity/description partition, and `schema::profile`'s own *"Provenance rides outside both"*.
+Raised by GitHub Actions run `32591210649` and established by reproducing the runner's failure on
+this host. Recorded 2026-08-22.
+
+**Repo:** `crates/cli/tests/facade_equivalence.rs` — the `STAMPED` key lists, `HOST_FACTS`,
+`mask_all`, `every_compared_verb`, and the two arms
+`a_stamped_answer_produced_on_another_host_still_compares_equal` and
+`every_provenance_field_this_answer_carries_is_classified_by_where_it_comes_from`.
+
+### What went red, and why it had never gone red here
+
+N349 gave the runner the kernel headers it had never had, and `just ci` on GitHub got past `lint`
+for the first time in this repository's recorded history. It reached test 55 of 1706 and stopped:
+
+```
+FAIL [ 0.031s] ( 55/1706) webcam-handler-cli::facade_equivalence
+                          the_two_stamped_read_verbs_differ_only_in_the_stamp_this_run_minted
+  left:  "kernel": "7.0.0-1011-azure"
+  right: "kernel": "7.0.0-30-generic"
+```
+
+`crates/cli/tests/fixtures/pre-facade/profile-capture.json:5` carries `7.0.0-30-generic`, which is
+this development laptop's `uname -r`. The suite compares the shipped binary's bytes against that
+fixture, masking the one line each stamped verb mints from a clock — and a captured profile's
+provenance carries `kernel` as well, filled by `engine::profile::kernel_release()` from
+`/proc/sys/kernel/osrelease` at the composition root, on every backend, with no branch for the fake.
+So the compared bytes held a value **the machine** supplied, and the criterion could only hold where
+both sides were produced on one host.
+
+It is the same shape as N349's own finding one layer up, and worth naming as its own class because
+the two look nothing alike from inside a green run: N349 was a *precondition* one host did not meet,
+this is an *expectation* one host does meet. Both are green on this laptop by construction and red
+anywhere else, and neither is visible from here.
+
+**Measured, not reasoned.** Substituting the runner's kernel string into this host's live answer and
+masking only `captured_at` reproduces the runner's one-line diff exactly, with no code change:
+
+```
+$ webcam-handler-cli --backend fake --profile corpus/profiles/chicony-rgb.json \
+    --json profile capture cam:integrated-camera-integrated-c \
+  | sed 's/7\.0\.0-30-generic/7.0.0-1011-azure/' | ...
+5c5
+<     "kernel": "7.0.0-1011-azure",
+---
+>     "kernel": "7.0.0-30-generic",
+```
+
+### Why the repair is on the test side, in three measured parts
+
+**The tree already says provenance is not compared.** `schema::profile`'s module doc is *"Provenance
+rides outside both"*, `ProfileProvenance`'s is *"Never compared — a re-capture has a new timestamp by
+definition"*, and `DeviceProfile::compare` honours it by destructuring `ProfileInvariant` alone.
+D15's partition has two sides, `info` and the description fields, and provenance is neither. This
+suite was the one place in the tree comparing it, so the deviation was the test's.
+
+**The field is a `required` member of a committed artifact.** `schemas/webcam-handler-schema.json`
+lists `kernel` in `ProfileProvenance`'s `required` array and carries its Rust doc comment verbatim as
+the description string, so even *editing that comment* moves two committed files and reddens
+`schema-artifacts-current.sh` until `just generate` runs. Removing the field is a wire break.
+
+**The field is doing work nothing else does.** All six committed corpus profiles carry it;
+`crates/backends/fake/tests/corpus_replay.rs` asserts each is non-empty and not `"(unknown)"`, with
+the message *"provenance without a kernel cannot date a finding"*; and `corpus-floor.sh` says a
+profile is committed *"at a kernel version somebody ran"*. This project's last two CI episodes
+(N236, N349) were both kernel-vintage stories. A test-side mask costs one file. Every product-side
+option costs a wire break, a corpus rewrite, or both.
+
+The fixture was not touched, and could not have been: the suite's own header says it stands in for a
+program nobody can run any more, and *"a fixture edited to make this suite green is the one thing
+that would make it worthless"*.
+
+### The half that is the actual finding: one mask is one spelling
+
+Masking `kernel` fixes the field that failed and says nothing about the next one. `ProfileProvenance`
+has five members and nothing closed it — a sixth host-derived field added tomorrow lands in these
+compared bytes with nothing red, which is precisely the state this entry is written from. N249's rule
+is that a ban on a defect names the class, so two arms hold it shut instead of one.
+
+**`a_stamped_answer_produced_on_another_host_still_compares_equal`** rewrites every value in
+`HOST_FACTS` — keyed on what the reader answers *now*, not on the JSON key name, so it cannot
+degenerate into a second copy of `STAMPED` and agree with it by construction — and re-runs the whole
+comparison over all seven verbs, not just the two stamped ones. It fails with the sentence CI printed.
+It also refuses to pass by doing nothing: if the substitution finds no occurrences it goes red saying
+so, because a rewrite that rewrote nothing proves nothing (N160, N231, N235).
+
+**`every_provenance_field_this_answer_carries_is_classified_by_where_it_comes_from`** destructures
+`ProfileProvenance` exhaustively and sorts every member into *clock*, *host* or *tree*. A sixth field
+stops the file compiling until somebody writes down which it is — the mechanism
+`profile-partition-is-closed.sh` gives the invariant half, applied to the block D15 left outside its
+partition. Its three assertions on the *tree* members are the other half of the argument, and they
+are why the provenance block is masked field by field rather than removed wholesale: `tool_version`,
+`capturer` and `backend` are identical on any host at one revision, and `backend: "fake"` is what
+proves the answer came from the fake rather than from a device. Masking the block would have thrown
+those three away to fix one field, and thrown them away invisibly.
+
+**Both directions, driven by the thing under test.** Removing `"kernel"` from `STAMPED`'s
+`profile-capture` row reddens both new arms, each with its own sentence; renaming the `HOST_FACTS`
+row reddens the classifier alone; pointing that row at a reader the product does not use reddens the
+substitution arm with *"substituted nothing and proved nothing"*. All three were run.
+
+### What this entry does not claim
+
+**That the class is closed across the suite.** A source-level sweep for host facts in compared
+expectations — `uname`, hostname, uid, `$HOME`, absolute paths, core counts, locale, camera counts,
+`/dev/video*` numbering, runner environment variables — found no second instance, and found that the
+tree already reaches for the host-independent idioms (live-against-live comparison in
+`crates/daemon/tests/mutating_verbs.rs`, injected environments through `MapEnv`, hardcoded fixture
+literals, named counted skips). But **1646 of 1706 tests, and four of `just ci`'s eight steps —
+`doc`, `deny`, `hygiene` and `gates`, which is 43 predicates and 658 selftest arms — have still never
+executed on a runner.** A sweep is an audit, not a run. Read what the runner says next before
+concluding anything about the class.
